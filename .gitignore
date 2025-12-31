@@ -47,4 +47,5 @@ Thumbs.db
 # Output files
 *.md
 !README.md
+!CLAUDE.md
 report.md
