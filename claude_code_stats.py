@@ -33,7 +33,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # Configuration - Claude Code data locations
 CLAUDE_DIR = Path.home() / ".claude"
