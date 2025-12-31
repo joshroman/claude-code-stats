@@ -2,10 +2,14 @@
 
 Usage analytics for [Claude Code](https://claude.ai/code) CLI - see how much time you actually spend using Claude Code.
 
+![Claude Code Stats](header.png)
+
 ## Features
 
 - **Active Time Tracking**: Estimates actual usage time by analyzing gaps between messages (accounts for idle periods, breaks, and sessions left open overnight)
 - **Session Analytics**: Track session counts, message breakdowns, and efficiency metrics
+- **HTML Stats Cards**: Generate shareable cards for Reddit, social media, or your website
+- **Token Usage**: Track input/output tokens per day with message and token ratios
 - **Command Usage**: Monitor `/clear` and `/compact` command frequency
 - **Model Statistics**: View token usage by model from Claude Code's cache
 - **Hourly Distribution**: See when you're most active with Claude Code
@@ -38,11 +42,23 @@ pip install .
 ## Usage
 
 ```bash
-# Print report to terminal
+# Print markdown report to terminal
 claude-code-stats
 
 # Save report to file
 claude-code-stats -o report.md
+
+# Generate shareable HTML card (compact)
+claude-code-stats --html card -o stats.html
+
+# Generate full HTML stats card with chart
+claude-code-stats --html full -o stats.html
+
+# Specify time period (7, 30, or 90 days)
+claude-code-stats --html full --period 30 -o stats.html
+
+# Include token usage in markdown report
+claude-code-stats --tokens
 
 # Custom idle threshold (default: 15 minutes)
 claude-code-stats --gap-threshold 10
@@ -56,6 +72,9 @@ claude-code-stats -q -o report.md
 | Option | Description |
 |--------|-------------|
 | `-o, --output FILE` | Save report to file (default: print to stdout) |
+| `--html card\|full` | Generate HTML output: `card` for compact, `full` for detailed with chart |
+| `-p, --period 7\|30\|90` | Time period for HTML output (default: 7 days) |
+| `-t, --tokens` | Include token usage columns in markdown daily breakdown |
 | `-g, --gap-threshold MINS` | Minutes of inactivity before counting as idle (default: 15) |
 | `-q, --quiet` | Suppress progress messages |
 | `-V, --version` | Show version number |
@@ -109,7 +128,11 @@ This prevents inflated numbers from sessions that were left open but not activel
 |--------|-------------|
 | **Active Time** | Estimated actual usage (gaps ≤ threshold) |
 | **Wall-Clock Time** | Total time from first to last message (includes idle) |
-| **Efficiency** | Ratio of active to wall-clock time |
+| **User Prompts** | Actual human messages (excludes tool results and system messages) |
+| **Claude Msgs** | Number of Claude assistant responses |
+| **Tool Results** | Tool/function call results returned to Claude |
+| **Message Ratio** | Claude messages ÷ User prompts (how much Claude responds per prompt) |
+| **Token Ratio** | Output tokens ÷ Input tokens |
 | **Clears** | Number of `/clear` commands used |
 | **Compacts** | Number of `/compact` commands + auto-compactions |
 
