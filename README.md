@@ -8,7 +8,7 @@ Usage analytics for [Claude Code](https://claude.ai/code) CLI - see how much tim
 
 - **Active Time Tracking**: Estimates actual usage time by analyzing gaps between messages (accounts for idle periods, breaks, and sessions left open overnight)
 - **Session Analytics**: Track session counts, message breakdowns, and efficiency metrics
-- **HTML Stats Cards**: Generate shareable cards for Reddit, social media, or your website
+- **HTML Stats Cards**: Generate shareable cards for Reddit, social media, or your website (dark and light themes)
 - **Token Usage**: Track input/output tokens per day with message and token ratios
 - **Command Usage**: Monitor `/clear` and `/compact` command frequency
 - **Model Statistics**: View token usage by model from Claude Code's cache
@@ -65,6 +65,12 @@ claude-code-stats --gap-threshold 10
 
 # Quiet mode (no progress messages)
 claude-code-stats -q -o report.md
+
+# Light mode (Anthropic brand colors)
+claude-code-stats --html full --light -o stats.html
+
+# Add GitHub username to card
+claude-code-stats --html full --username @yourname -o stats.html
 ```
 
 ### Options
@@ -76,6 +82,8 @@ claude-code-stats -q -o report.md
 | `-p, --period 7\|30\|90` | Time period for HTML output (default: 7 days) |
 | `-t, --tokens` | Include token usage columns in markdown daily breakdown |
 | `-g, --gap-threshold MINS` | Minutes of inactivity before counting as idle (default: 15) |
+| `--light` | Use light theme with Anthropic brand colors |
+| `-u, --username NAME` | GitHub username to display on HTML cards (or set `GITHUB_USERNAME` in `.env`) |
 | `-q, --quiet` | Suppress progress messages |
 | `-V, --version` | Show version number |
 
