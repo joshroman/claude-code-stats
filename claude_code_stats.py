@@ -578,7 +578,9 @@ def generate_html_report(
     stats_cache: Dict,
     daily_tokens: Dict[str, Dict[str, int]],
     period_days: int = 7,
-    style: str = "card"
+    style: str = "card",
+    light_mode: bool = False,
+    username: str = None
 ) -> str:
     """Generate HTML report for sharing.
 
@@ -588,6 +590,8 @@ def generate_html_report(
         daily_tokens: Dict mapping date to {"input": int, "output": int}
         period_days: Number of days to include (7, 30, 90)
         style: "card" for compact card, "full" for detailed stats card
+        light_mode: Use light theme with Anthropic brand colors
+        username: GitHub username to display (optional)
 
     Returns:
         HTML string
@@ -651,6 +655,13 @@ def generate_html_report(
     elif period_days == 90:
         period_label = "Last 90 days"
 
+    # Add username if provided
+    if username:
+        # Ensure @ prefix
+        if not username.startswith("@"):
+            username = f"@{username}"
+        period_label = f"{period_label} · {username}"
+
     # Build day-of-week chart data (Sun=0 to Sat=6)
     day_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
     dow_hours = {i: [] for i in range(7)}  # Collect hours per day of week
@@ -676,6 +687,42 @@ def generate_html_report(
     if max_dow_value == 0:
         max_dow_value = 1
 
+    # Theme colors
+    if light_mode:
+        theme = {
+            "bg": "#F4F3EE",
+            "card_bg": "#FFFFFF",
+            "card_border": "rgba(0,0,0,0.08)",
+            "card_shadow": "rgba(0,0,0,0.08)",
+            "stat_bg": "rgba(0,0,0,0.03)",
+            "stat_border": "rgba(0,0,0,0.05)",
+            "title": "#131314",
+            "text": "#6b7280",
+            "text_secondary": "#9ca3af",
+            "accent": "#d97757",
+            "accent_gradient": "linear-gradient(180deg, #d97757 0%, #c4684a 100%)",
+            "green": "#059669",
+            "blue": "#2563eb",
+            "divider": "rgba(0,0,0,0.08)",
+        }
+    else:
+        theme = {
+            "bg": "#1a1a2e",
+            "card_bg": "linear-gradient(135deg, #16213e 0%, #1a1a2e 100%)",
+            "card_border": "rgba(255,255,255,0.1)",
+            "card_shadow": "rgba(0,0,0,0.3)",
+            "stat_bg": "rgba(255,255,255,0.05)",
+            "stat_border": "rgba(255,255,255,0.05)",
+            "title": "#fff",
+            "text": "#9ca3af",
+            "text_secondary": "#6b7280",
+            "accent": "#f59e0b",
+            "accent_gradient": "linear-gradient(180deg, #f59e0b 0%, #d97706 100%)",
+            "green": "#10b981",
+            "blue": "#60a5fa",
+            "divider": "rgba(255,255,255,0.1)",
+        }
+
     if style == "card":
         # Compact card - great for Reddit/social sharing
         html = f"""<!DOCTYPE html>
@@ -686,23 +733,23 @@ def generate_html_report(
     <title>Claude Code Stats</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }}
-        .card {{ background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%); border-radius: 16px; padding: 24px; max-width: 520px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: {theme["bg"]}; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }}
+        .card {{ background: {theme["card_bg"]}; border-radius: 16px; padding: 24px; max-width: 520px; width: 100%; box-shadow: 0 8px 32px {theme["card_shadow"]}; border: 1px solid {theme["card_border"]}; }}
         .header {{ display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }}
         .header-left {{ display: flex; align-items: center; gap: 12px; }}
         .header-right {{ margin-left: auto; text-align: right; }}
-        .ratio {{ color: #10b981; font-size: 12px; font-weight: 600; }}
-        .ratio-label {{ color: #6b7280; font-size: 9px; text-transform: uppercase; }}
+        .ratio {{ color: {theme["green"]}; font-size: 12px; font-weight: 600; }}
+        .ratio-label {{ color: {theme["text_secondary"]}; font-size: 9px; text-transform: uppercase; }}
         .logo {{ width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; }}
-        .title {{ color: #fff; font-size: 18px; font-weight: 600; }}
-        .period {{ color: #9ca3af; font-size: 12px; }}
+        .title {{ color: {theme["title"]}; font-size: 18px; font-weight: 600; }}
+        .period {{ color: {theme["text"]}; font-size: 12px; }}
         .stats {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }}
-        .stat {{ background: rgba(255,255,255,0.05); border-radius: 10px; padding: 12px 10px; text-align: center; }}
-        .stat-label {{ color: #9ca3af; font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }}
-        .stat-value {{ color: #f59e0b; font-size: 20px; font-weight: 700; margin-bottom: 4px; }}
-        .stat-daily {{ color: #9ca3af; font-size: 11px; }}
-        .footer {{ margin-top: 20px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.1); }}
-        .date {{ color: #6b7280; font-size: 11px; }}
+        .stat {{ background: {theme["stat_bg"]}; border-radius: 10px; padding: 12px 10px; text-align: center; }}
+        .stat-label {{ color: {theme["text"]}; font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }}
+        .stat-value {{ color: {theme["accent"]}; font-size: 20px; font-weight: 700; margin-bottom: 4px; }}
+        .stat-daily {{ color: {theme["text"]}; font-size: 11px; }}
+        .footer {{ margin-top: 20px; padding-top: 16px; border-top: 1px solid {theme["divider"]}; }}
+        .date {{ color: {theme["text_secondary"]}; font-size: 11px; }}
         .eye {{ animation: blink 4s ease-in-out infinite; }}
         .arm-right {{ transform-origin: 13px 7px; animation: wave 5s ease-in-out infinite; }}
         @keyframes blink {{ 0%, 92%, 100% {{ transform: scaleY(1); }} 95%, 97% {{ transform: scaleY(0.1); }} }}
@@ -777,6 +824,9 @@ def generate_html_report(
                 <div class="bar-label">{day_names[i]}</div>
             </div>'''
 
+        # Chart background for light mode
+        chart_bg = "rgba(0,0,0,0.03)" if light_mode else "rgba(0,0,0,0.2)"
+
         html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -785,34 +835,34 @@ def generate_html_report(
     <title>Claude Code Stats - Full Report</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f1a; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }}
-        .card {{ background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 20px; padding: 32px; max-width: 640px; width: 100%; box-shadow: 0 12px 48px rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.08); }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: {theme["bg"]}; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }}
+        .card {{ background: {theme["card_bg"]}; border-radius: 20px; padding: 32px; max-width: 640px; width: 100%; box-shadow: 0 12px 48px {theme["card_shadow"]}; border: 1px solid {theme["card_border"]}; }}
         .header {{ display: flex; align-items: center; gap: 16px; margin-bottom: 28px; }}
         .header-left {{ display: flex; align-items: center; gap: 16px; }}
         .header-right {{ margin-left: auto; text-align: right; }}
-        .ratio {{ color: #10b981; font-size: 14px; font-weight: 600; }}
-        .ratio-label {{ color: #6b7280; font-size: 10px; text-transform: uppercase; }}
+        .ratio {{ color: {theme["green"]}; font-size: 14px; font-weight: 600; }}
+        .ratio-label {{ color: {theme["text_secondary"]}; font-size: 10px; text-transform: uppercase; }}
         .logo {{ width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; }}
-        .header-text .title {{ color: #fff; font-size: 24px; font-weight: 700; }}
-        .header-text .period {{ color: #9ca3af; font-size: 14px; margin-top: 4px; }}
+        .header-text .title {{ color: {theme["title"]}; font-size: 24px; font-weight: 700; }}
+        .header-text .period {{ color: {theme["text"]}; font-size: 14px; margin-top: 4px; }}
         .stats-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 28px; }}
-        .stat {{ background: rgba(255,255,255,0.03); border-radius: 12px; padding: 14px 12px; text-align: center; border: 1px solid rgba(255,255,255,0.05); }}
-        .stat-label {{ color: #9ca3af; font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }}
-        .stat-value {{ color: #f59e0b; font-size: 22px; font-weight: 700; margin-bottom: 4px; }}
-        .stat-daily {{ color: #9ca3af; font-size: 12px; }}
-        .section-title {{ color: #fff; font-size: 14px; font-weight: 600; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 1px; }}
-        .chart {{ display: flex; gap: 8px; align-items: flex-end; height: 120px; margin-bottom: 28px; padding: 16px; background: rgba(0,0,0,0.2); border-radius: 12px; }}
+        .stat {{ background: {theme["stat_bg"]}; border-radius: 12px; padding: 14px 12px; text-align: center; border: 1px solid {theme["stat_border"]}; }}
+        .stat-label {{ color: {theme["text"]}; font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }}
+        .stat-value {{ color: {theme["accent"]}; font-size: 22px; font-weight: 700; margin-bottom: 4px; }}
+        .stat-daily {{ color: {theme["text"]}; font-size: 12px; }}
+        .section-title {{ color: {theme["title"]}; font-size: 14px; font-weight: 600; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 1px; }}
+        .chart {{ display: flex; gap: 8px; align-items: flex-end; height: 120px; margin-bottom: 28px; padding: 16px; background: {chart_bg}; border-radius: 12px; }}
         .bar-container {{ flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; }}
-        .bar {{ width: 100%; background: linear-gradient(180deg, #f59e0b 0%, #d97706 100%); border-radius: 4px 4px 0 0; min-height: 2px; }}
-        .bar-value {{ color: #f59e0b; font-size: 10px; margin-bottom: 4px; font-weight: 600; }}
-        .bar-label {{ color: #9ca3af; font-size: 11px; margin-top: 8px; font-weight: 500; }}
+        .bar {{ width: 100%; background: {theme["accent_gradient"]}; border-radius: 4px 4px 0 0; min-height: 2px; }}
+        .bar-value {{ color: {theme["accent"]}; font-size: 10px; margin-bottom: 4px; font-weight: 600; }}
+        .bar-label {{ color: {theme["text"]}; font-size: 11px; margin-top: 8px; font-weight: 500; }}
         .token-stats {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }}
-        .token-stat {{ background: rgba(255,255,255,0.03); border-radius: 12px; padding: 16px; border: 1px solid rgba(255,255,255,0.05); text-align: center; }}
-        .token-label {{ color: #9ca3af; font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }}
-        .token-value {{ color: #60a5fa; font-size: 22px; font-weight: 600; }}
-        .token-daily {{ color: #9ca3af; font-size: 12px; margin-top: 4px; }}
-        .footer {{ padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.08); }}
-        .meta {{ color: #6b7280; font-size: 12px; }}
+        .token-stat {{ background: {theme["stat_bg"]}; border-radius: 12px; padding: 16px; border: 1px solid {theme["stat_border"]}; text-align: center; }}
+        .token-label {{ color: {theme["text"]}; font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }}
+        .token-value {{ color: {theme["blue"]}; font-size: 22px; font-weight: 600; }}
+        .token-daily {{ color: {theme["text"]}; font-size: 12px; margin-top: 4px; }}
+        .footer {{ padding-top: 20px; border-top: 1px solid {theme["divider"]}; }}
+        .meta {{ color: {theme["text_secondary"]}; font-size: 12px; }}
         .eye {{ animation: blink 4s ease-in-out infinite; }}
         .arm-right {{ transform-origin: 13px 7px; animation: wave 5s ease-in-out infinite; }}
         @keyframes blink {{ 0%, 92%, 100% {{ transform: scaleY(1); }} 95%, 97% {{ transform: scaleY(0.1); }} }}
@@ -959,6 +1009,17 @@ conversation transcripts and statistics.
         help="Include token usage (input/output) in daily breakdown instead of clears/compacts"
     )
     parser.add_argument(
+        "--light",
+        action="store_true",
+        help="Use light theme with Anthropic brand colors (default: dark theme)"
+    )
+    parser.add_argument(
+        "--username", "-u",
+        type=str,
+        default=None,
+        help="GitHub username to display (e.g., @joshroman)"
+    )
+    parser.add_argument(
         "--html",
         choices=["card", "full"],
         default=None,
@@ -973,6 +1034,20 @@ conversation transcripts and statistics.
     )
 
     args = parser.parse_args()
+
+    # Load username from .env if not provided via CLI
+    if args.username is None:
+        env_file = Path(__file__).parent / ".env"
+        if env_file.exists():
+            try:
+                with open(env_file, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("GITHUB_USERNAME="):
+                            args.username = line.split("=", 1)[1].strip()
+                            break
+            except IOError:
+                pass
 
     # Check if Claude Code data exists
     if not CLAUDE_DIR.exists():
@@ -1014,7 +1089,9 @@ conversation transcripts and statistics.
             stats_cache,
             daily_tokens,
             period_days=period_days,
-            style=args.html
+            style=args.html,
+            light_mode=args.light,
+            username=args.username
         )
     else:
         # Markdown output

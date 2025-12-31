@@ -26,6 +26,7 @@ venv/
 env/
 .venv/
 .env/
+.env
 
 # IDE
 .idea/
@@ -49,3 +50,4 @@ Thumbs.db
 !README.md
 !CLAUDE.md
 report.md
+header.html
