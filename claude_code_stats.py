@@ -617,6 +617,16 @@ def generate_html_report(
     total_user_messages = sum(s["user_messages"] for s in filtered)
     total_claude_messages = sum(s["assistant_messages"] for s in filtered)
 
+    # Calculate clears and compacts
+    total_clears = sum(s["clear_count"] for s in filtered)
+    total_compacts = sum(s["compact_count"] for s in filtered)
+    clears_per_session = total_clears / total_sessions if total_sessions > 0 else 0
+    compacts_per_session = total_compacts / total_sessions if total_sessions > 0 else 0
+
+    # Calculate tool results (total - user prompts - claude messages)
+    total_tool_results = total_messages - total_user_messages - total_claude_messages
+    tool_results_per_day = total_tool_results / period_days if period_days > 0 else 0
+
     # Calculate ratios
     token_ratio = total_output_tokens / total_input_tokens if total_input_tokens > 0 else 0
     message_ratio = total_claude_messages / total_user_messages if total_user_messages > 0 else 0
@@ -679,26 +689,41 @@ def generate_html_report(
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }}
         .card {{ background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%); border-radius: 16px; padding: 24px; max-width: 520px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); }}
         .header {{ display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }}
+        .header-left {{ display: flex; align-items: center; gap: 12px; }}
+        .header-right {{ margin-left: auto; text-align: right; }}
+        .ratio {{ color: #10b981; font-size: 12px; font-weight: 600; }}
+        .ratio-label {{ color: #6b7280; font-size: 9px; text-transform: uppercase; }}
         .logo {{ width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; }}
         .title {{ color: #fff; font-size: 18px; font-weight: 600; }}
         .period {{ color: #9ca3af; font-size: 12px; }}
         .stats {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }}
         .stat {{ background: rgba(255,255,255,0.05); border-radius: 10px; padding: 12px 10px; text-align: center; }}
         .stat-label {{ color: #9ca3af; font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }}
-        .stat-value {{ color: #f59e0b; font-size: 18px; font-weight: 700; margin-bottom: 2px; }}
-        .stat-daily {{ color: #6b7280; font-size: 9px; }}
-        .footer {{ margin-top: 20px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center; }}
-        .ratios {{ color: #10b981; font-size: 12px; font-weight: 500; }}
+        .stat-value {{ color: #f59e0b; font-size: 20px; font-weight: 700; margin-bottom: 4px; }}
+        .stat-daily {{ color: #9ca3af; font-size: 11px; }}
+        .footer {{ margin-top: 20px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.1); }}
         .date {{ color: #6b7280; font-size: 11px; }}
+        .eye {{ animation: blink 4s ease-in-out infinite; }}
+        .arm-right {{ transform-origin: 13px 7px; animation: wave 5s ease-in-out infinite; }}
+        @keyframes blink {{ 0%, 92%, 100% {{ transform: scaleY(1); }} 95%, 97% {{ transform: scaleY(0.1); }} }}
+        @keyframes wave {{ 0%, 85%, 100% {{ transform: rotate(0deg); }} 88%, 92% {{ transform: rotate(-25deg); }} 90% {{ transform: rotate(-15deg); }} }}
     </style>
 </head>
 <body>
     <div class="card">
         <div class="header">
-            <div class="logo"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="20" height="18" rx="2" stroke="url(#term-grad)" stroke-width="1.5" fill="none"/><path d="M6 8l4 4-4 4" stroke="url(#term-grad)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 16h6" stroke="url(#term-grad)" stroke-width="1.5" stroke-linecap="round"/><defs><linearGradient id="term-grad" x1="2" y1="3" x2="22" y2="21" gradientUnits="userSpaceOnUse"><stop stop-color="#d97706"/><stop offset="1" stop-color="#f59e0b"/></linearGradient></defs></svg></div>
-            <div>
-                <div class="title">Claude Code Stats</div>
-                <div class="period">{period_label}</div>
+            <div class="header-left">
+                <div class="logo"><svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 16 16"><rect width="16" height="16" fill="none"/><rect x="3" y="2" width="10" height="6" fill="#d97757"/><rect x="4" y="8" width="1" height="3" fill="#d97757"/><rect x="5.5" y="8" width="1" height="3" fill="#d97757"/><rect x="9.5" y="8" width="1" height="3" fill="#d97757"/><rect x="11" y="8" width="1" height="3" fill="#d97757"/><rect x="2" y="4" width="1" height="3" fill="#d97757"/><rect class="arm-right" x="13" y="4" width="1" height="3" fill="#d97757"/><rect class="eye" x="5" y="3" width="1" height="2" fill="#141413"/><rect class="eye" x="10" y="3" width="1" height="2" fill="#141413"/></svg></div>
+                <div>
+                    <div class="title">Claude Code Stats</div>
+                    <div class="period">{period_label}</div>
+                </div>
+            </div>
+            <div class="header-right">
+                <div class="ratio">{message_ratio:.1f}x</div>
+                <div class="ratio-label">msg ratio</div>
+                <div class="ratio" style="margin-top: 4px;">{token_ratio:.2f}x</div>
+                <div class="ratio-label">token ratio</div>
             </div>
         </div>
         <div class="stats">
@@ -718,7 +743,7 @@ def generate_html_report(
                 <div class="stat-daily">{sessions_per_day:.1f}/day</div>
             </div>
             <div class="stat">
-                <div class="stat-label">User Msgs</div>
+                <div class="stat-label">User Prompts</div>
                 <div class="stat-value">{format_number(total_user_messages)}</div>
                 <div class="stat-daily">{user_messages_per_day:.0f}/day</div>
             </div>
@@ -728,13 +753,12 @@ def generate_html_report(
                 <div class="stat-daily">{claude_messages_per_day:.0f}/day</div>
             </div>
             <div class="stat">
-                <div class="stat-label">Total Msgs</div>
-                <div class="stat-value">{format_number(total_messages)}</div>
-                <div class="stat-daily">{messages_per_day:.0f}/day</div>
+                <div class="stat-label">Tool Results</div>
+                <div class="stat-value">{format_number(total_tool_results)}</div>
+                <div class="stat-daily">{tool_results_per_day:.0f}/day</div>
             </div>
         </div>
         <div class="footer">
-            <div class="ratios">{message_ratio:.1f}x msg ratio · {token_ratio:.2f}x token ratio</div>
             <div class="date">{now.strftime('%Y-%m-%d')}</div>
         </div>
     </div>
@@ -764,14 +788,18 @@ def generate_html_report(
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f1a; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }}
         .card {{ background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 20px; padding: 32px; max-width: 640px; width: 100%; box-shadow: 0 12px 48px rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.08); }}
         .header {{ display: flex; align-items: center; gap: 16px; margin-bottom: 28px; }}
+        .header-left {{ display: flex; align-items: center; gap: 16px; }}
+        .header-right {{ margin-left: auto; text-align: right; }}
+        .ratio {{ color: #10b981; font-size: 14px; font-weight: 600; }}
+        .ratio-label {{ color: #6b7280; font-size: 10px; text-transform: uppercase; }}
         .logo {{ width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; }}
         .header-text .title {{ color: #fff; font-size: 24px; font-weight: 700; }}
         .header-text .period {{ color: #9ca3af; font-size: 14px; margin-top: 4px; }}
         .stats-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 28px; }}
         .stat {{ background: rgba(255,255,255,0.03); border-radius: 12px; padding: 14px 12px; text-align: center; border: 1px solid rgba(255,255,255,0.05); }}
         .stat-label {{ color: #9ca3af; font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }}
-        .stat-value {{ color: #f59e0b; font-size: 20px; font-weight: 700; margin-bottom: 2px; }}
-        .stat-daily {{ color: #6b7280; font-size: 9px; }}
+        .stat-value {{ color: #f59e0b; font-size: 22px; font-weight: 700; margin-bottom: 4px; }}
+        .stat-daily {{ color: #9ca3af; font-size: 12px; }}
         .section-title {{ color: #fff; font-size: 14px; font-weight: 600; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 1px; }}
         .chart {{ display: flex; gap: 8px; align-items: flex-end; height: 120px; margin-bottom: 28px; padding: 16px; background: rgba(0,0,0,0.2); border-radius: 12px; }}
         .bar-container {{ flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; }}
@@ -781,20 +809,31 @@ def generate_html_report(
         .token-stats {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }}
         .token-stat {{ background: rgba(255,255,255,0.03); border-radius: 12px; padding: 16px; border: 1px solid rgba(255,255,255,0.05); text-align: center; }}
         .token-label {{ color: #9ca3af; font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }}
-        .token-value {{ color: #60a5fa; font-size: 20px; font-weight: 600; }}
-        .token-daily {{ color: #6b7280; font-size: 9px; margin-top: 2px; }}
-        .footer {{ padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center; }}
-        .ratios {{ color: #10b981; font-size: 13px; font-weight: 500; }}
+        .token-value {{ color: #60a5fa; font-size: 22px; font-weight: 600; }}
+        .token-daily {{ color: #9ca3af; font-size: 12px; margin-top: 4px; }}
+        .footer {{ padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.08); }}
         .meta {{ color: #6b7280; font-size: 12px; }}
+        .eye {{ animation: blink 4s ease-in-out infinite; }}
+        .arm-right {{ transform-origin: 13px 7px; animation: wave 5s ease-in-out infinite; }}
+        @keyframes blink {{ 0%, 92%, 100% {{ transform: scaleY(1); }} 95%, 97% {{ transform: scaleY(0.1); }} }}
+        @keyframes wave {{ 0%, 85%, 100% {{ transform: rotate(0deg); }} 88%, 92% {{ transform: rotate(-25deg); }} 90% {{ transform: rotate(-15deg); }} }}
     </style>
 </head>
 <body>
     <div class="card">
         <div class="header">
-            <div class="logo"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="20" height="18" rx="2" stroke="url(#term-grad)" stroke-width="1.5" fill="none"/><path d="M6 8l4 4-4 4" stroke="url(#term-grad)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 16h6" stroke="url(#term-grad)" stroke-width="1.5" stroke-linecap="round"/><defs><linearGradient id="term-grad" x1="2" y1="3" x2="22" y2="21" gradientUnits="userSpaceOnUse"><stop stop-color="#d97706"/><stop offset="1" stop-color="#f59e0b"/></linearGradient></defs></svg></div>
-            <div class="header-text">
-                <div class="title">Claude Code Stats</div>
-                <div class="period">{period_label}</div>
+            <div class="header-left">
+                <div class="logo"><svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 16 16"><rect width="16" height="16" fill="none"/><rect x="3" y="2" width="10" height="6" fill="#d97757"/><rect x="4" y="8" width="1" height="3" fill="#d97757"/><rect x="5.5" y="8" width="1" height="3" fill="#d97757"/><rect x="9.5" y="8" width="1" height="3" fill="#d97757"/><rect x="11" y="8" width="1" height="3" fill="#d97757"/><rect x="2" y="4" width="1" height="3" fill="#d97757"/><rect class="arm-right" x="13" y="4" width="1" height="3" fill="#d97757"/><rect class="eye" x="5" y="3" width="1" height="2" fill="#141413"/><rect class="eye" x="10" y="3" width="1" height="2" fill="#141413"/></svg></div>
+                <div class="header-text">
+                    <div class="title">Claude Code Stats</div>
+                    <div class="period">{period_label}</div>
+                </div>
+            </div>
+            <div class="header-right">
+                <div class="ratio">{message_ratio:.1f}x</div>
+                <div class="ratio-label">msg ratio</div>
+                <div class="ratio" style="margin-top: 6px;">{token_ratio:.2f}x</div>
+                <div class="ratio-label">token ratio</div>
             </div>
         </div>
 
@@ -815,7 +854,7 @@ def generate_html_report(
                 <div class="stat-daily">{sessions_per_day:.1f}/day</div>
             </div>
             <div class="stat">
-                <div class="stat-label">User Msgs</div>
+                <div class="stat-label">User Prompts</div>
                 <div class="stat-value">{format_number(total_user_messages)}</div>
                 <div class="stat-daily">{user_messages_per_day:.0f}/day</div>
             </div>
@@ -825,9 +864,9 @@ def generate_html_report(
                 <div class="stat-daily">{claude_messages_per_day:.0f}/day</div>
             </div>
             <div class="stat">
-                <div class="stat-label">Total Msgs</div>
-                <div class="stat-value">{format_number(total_messages)}</div>
-                <div class="stat-daily">{messages_per_day:.0f}/day</div>
+                <div class="stat-label">Tool Results</div>
+                <div class="stat-value">{format_number(total_tool_results)}</div>
+                <div class="stat-daily">{tool_results_per_day:.0f}/day</div>
             </div>
         </div>
 
@@ -850,8 +889,21 @@ def generate_html_report(
             </div>
         </div>
 
+        <div class="section-title">Session Behavior</div>
+        <div class="token-stats">
+            <div class="token-stat">
+                <div class="token-label">Clears</div>
+                <div class="token-value">{format_number(total_clears)}</div>
+                <div class="token-daily">{clears_per_session:.1f}/session</div>
+            </div>
+            <div class="token-stat">
+                <div class="token-label">Compacts</div>
+                <div class="token-value">{format_number(total_compacts)}</div>
+                <div class="token-daily">{compacts_per_session:.1f}/session</div>
+            </div>
+        </div>
+
         <div class="footer">
-            <div class="ratios">{message_ratio:.1f}x msg ratio · {token_ratio:.2f}x token ratio</div>
             <div class="meta">Generated {now.strftime('%Y-%m-%d %H:%M')}</div>
         </div>
     </div>
