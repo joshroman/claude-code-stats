@@ -62,18 +62,20 @@ def parse_timestamp(ts) -> Optional[datetime]:
     return None
 
 
-def load_jsonl_messages() -> Tuple[List[Dict], Dict[str, int]]:
+def load_jsonl_messages() -> Tuple[List[Dict], Dict[str, int], Dict[str, Dict[str, int]]]:
     """Load all messages from JSONL conversation files.
 
     Returns:
-        Tuple of (messages list, session_summary_counts dict)
+        Tuple of (messages list, session_summary_counts dict, daily_tokens dict)
         session_summary_counts maps session_id to count of summary entries (compactions)
+        daily_tokens maps date string to {"input": int, "output": int}
     """
     messages = []
     session_summary_counts: Dict[str, int] = defaultdict(int)
+    daily_tokens: Dict[str, Dict[str, int]] = defaultdict(lambda: {"input": 0, "output": 0})
 
     if not PROJECTS_DIR.exists():
-        return messages, dict(session_summary_counts)
+        return messages, dict(session_summary_counts), dict(daily_tokens)
 
     for jsonl_file in PROJECTS_DIR.rglob("*.jsonl"):
         # Extract session_id from filename (format: {session_id}.jsonl or agent-{id}.jsonl)
@@ -99,6 +101,16 @@ def load_jsonl_messages() -> Tuple[List[Dict], Dict[str, int]]:
                                 content_str = str(msg_content)
                                 is_clear = "<command-name>/clear" in content_str
                                 is_compact = "<command-name>/compact" in content_str
+
+                                # Extract token usage from message.usage field
+                                usage = data.get("message", {}).get("usage", {})
+                                if usage:
+                                    date_str = dt.date().isoformat()
+                                    # Input tokens = just direct input (not cache, which is context)
+                                    input_tokens = usage.get("input_tokens", 0)
+                                    output_tokens = usage.get("output_tokens", 0)
+                                    daily_tokens[date_str]["input"] += input_tokens
+                                    daily_tokens[date_str]["output"] += output_tokens
 
                                 # Determine if this is actual user input (not tool results)
                                 is_actual_user_input = False
@@ -135,7 +147,7 @@ def load_jsonl_messages() -> Tuple[List[Dict], Dict[str, int]]:
         except (IOError, OSError):
             continue
 
-    return messages, dict(session_summary_counts)
+    return messages, dict(session_summary_counts), dict(daily_tokens)
 
 
 def load_assistant_durations() -> Dict[str, float]:
@@ -335,14 +347,43 @@ def format_duration(minutes: float) -> str:
     return f"{days:.1f}d"
 
 
+def format_tokens(tokens: int) -> str:
+    """Format token count in human-readable format (K/M)."""
+    if tokens < 1000:
+        return str(tokens)
+    elif tokens < 1_000_000:
+        return f"{tokens/1000:.1f}K"
+    else:
+        return f"{tokens/1_000_000:.1f}M"
+
+
+def format_number(n: int) -> str:
+    """Format number with comma thousands separators."""
+    return f"{n:,}"
+
+
 def generate_report(
     session_stats: List[Dict],
     assistant_durations: Dict[str, float],
     stats_cache: Dict,
-    gap_threshold: int
+    gap_threshold: int,
+    daily_tokens: Dict[str, Dict[str, int]] = None,
+    show_tokens: bool = False,
+    period_days: int = None
 ) -> str:
-    """Generate markdown report."""
+    """Generate markdown report.
+
+    Args:
+        session_stats: List of session statistics
+        assistant_durations: Dict of session durations from SQLite
+        stats_cache: Pre-computed stats from Claude Code
+        gap_threshold: Gap threshold in minutes for idle detection
+        daily_tokens: Dict mapping date to {"input": int, "output": int}
+        show_tokens: Whether to include token columns in output
+        period_days: If set, only show data for last N days (7, 30, 90, etc.)
+    """
     now = datetime.now()
+    daily_tokens = daily_tokens or {}
 
     # Aggregate by periods
     week_stats = aggregate_by_period(session_stats, "week", now)
@@ -386,9 +427,15 @@ Generated: **{now.strftime('%Y-%m-%d %H:%M')}**
 
 ## Last 7 Days - Daily Breakdown
 
-| Date | Sessions | Active | Clock | User Msgs | Claude Msgs | Clears | Compacts |
-|------|----------|--------|-------|-----------|-------------|--------|----------|
 """
+
+    # Build table header dynamically based on show_tokens flag
+    if show_tokens:
+        report += "| Date | Sessions | Active | Clock | User Msgs | Claude Msgs | Input Tokens | Output Tokens |\n"
+        report += "|------|----------|--------|-------|-----------|-------------|--------------|---------------|\n"
+    else:
+        report += "| Date | Sessions | Active | Clock | User Msgs | Claude Msgs | Clears | Compacts |\n"
+        report += "|------|----------|--------|-------|-----------|-------------|--------|----------|\n"
 
     # Add daily breakdown for last week
     for i in range(7):
@@ -397,9 +444,17 @@ Generated: **{now.strftime('%Y-%m-%d %H:%M')}**
             day = week_stats["daily_breakdown"][d]
             active_fmt = format_duration(day['active_minutes'])
             clock_fmt = format_duration(day['wall_clock_minutes'])
-            report += f"| {d} | {day['sessions']} | {active_fmt} | {clock_fmt} | {day['user_messages']} | {day['assistant_messages']} | {day['clear_count']} | {day['compact_count']} |\n"
+            if show_tokens:
+                tokens = daily_tokens.get(d, {"input": 0, "output": 0})
+                report += f"| {d} | {day['sessions']} | {active_fmt} | {clock_fmt} | {day['user_messages']} | {day['assistant_messages']} | {format_tokens(tokens['input'])} | {format_tokens(tokens['output'])} |\n"
+            else:
+                report += f"| {d} | {day['sessions']} | {active_fmt} | {clock_fmt} | {day['user_messages']} | {day['assistant_messages']} | {day['clear_count']} | {day['compact_count']} |\n"
         else:
-            report += f"| {d} | 0 | 0m | 0m | 0 | 0 | 0 | 0 |\n"
+            if show_tokens:
+                tokens = daily_tokens.get(d, {"input": 0, "output": 0})
+                report += f"| {d} | 0 | 0m | 0m | 0 | 0 | {format_tokens(tokens['input'])} | {format_tokens(tokens['output'])} |\n"
+            else:
+                report += f"| {d} | 0 | 0m | 0m | 0 | 0 | 0 | 0 |\n"
 
     report += """
 ---
@@ -518,6 +573,294 @@ Data sources:
     return report
 
 
+def generate_html_report(
+    session_stats: List[Dict],
+    stats_cache: Dict,
+    daily_tokens: Dict[str, Dict[str, int]],
+    period_days: int = 7,
+    style: str = "card"
+) -> str:
+    """Generate HTML report for sharing.
+
+    Args:
+        session_stats: List of session statistics
+        stats_cache: Pre-computed stats from Claude Code
+        daily_tokens: Dict mapping date to {"input": int, "output": int}
+        period_days: Number of days to include (7, 30, 90)
+        style: "card" for compact card, "full" for detailed stats card
+
+    Returns:
+        HTML string
+    """
+    now = datetime.now()
+    cutoff = (now - timedelta(days=period_days)).date()
+
+    # Filter sessions for the period
+    filtered = [s for s in session_stats if s["date"] >= cutoff]
+
+    # Calculate stats
+    total_sessions = len(filtered)
+    total_messages = sum(s["message_count"] for s in filtered)
+    total_active = sum(s["active_minutes"] for s in filtered)
+    total_wall = sum(s["wall_clock_minutes"] for s in filtered)
+
+    # Calculate total tokens for period
+    total_input_tokens = 0
+    total_output_tokens = 0
+    for i in range(period_days):
+        d = (now - timedelta(days=i)).date().isoformat()
+        if d in daily_tokens:
+            total_input_tokens += daily_tokens[d]["input"]
+            total_output_tokens += daily_tokens[d]["output"]
+
+    # Calculate user and claude messages
+    total_user_messages = sum(s["user_messages"] for s in filtered)
+    total_claude_messages = sum(s["assistant_messages"] for s in filtered)
+
+    # Calculate ratios
+    token_ratio = total_output_tokens / total_input_tokens if total_input_tokens > 0 else 0
+    message_ratio = total_claude_messages / total_user_messages if total_user_messages > 0 else 0
+
+    # Calculate per-day averages
+    active_per_day = (total_active / 60) / period_days if period_days > 0 else 0
+    wall_per_day = (total_wall / 60) / period_days if period_days > 0 else 0
+    sessions_per_day = total_sessions / period_days if period_days > 0 else 0
+    messages_per_day = total_messages / period_days if period_days > 0 else 0
+    user_messages_per_day = total_user_messages / period_days if period_days > 0 else 0
+    claude_messages_per_day = total_claude_messages / period_days if period_days > 0 else 0
+    input_tokens_per_day = total_input_tokens / period_days if period_days > 0 else 0
+    output_tokens_per_day = total_output_tokens / period_days if period_days > 0 else 0
+    total_tokens_per_day = (total_input_tokens + total_output_tokens) / period_days if period_days > 0 else 0
+
+    # Period label
+    period_label = f"Last {period_days} days"
+    if period_days == 7:
+        period_label = "Last 7 days"
+    elif period_days == 30:
+        period_label = "Last 30 days"
+    elif period_days == 90:
+        period_label = "Last 90 days"
+
+    # Build day-of-week chart data (Sun=0 to Sat=6)
+    day_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    dow_hours = {i: [] for i in range(7)}  # Collect hours per day of week
+
+    for i in range(period_days):
+        d = (now - timedelta(days=i)).date()
+        dow = (d.weekday() + 1) % 7  # Convert Monday=0 to Sunday=0
+        sessions_for_day = [s for s in filtered if s["date"] == d]
+        active_hours = sum(s["active_minutes"] for s in sessions_for_day) / 60
+        dow_hours[dow].append(active_hours)
+
+    # Calculate totals (7d) or averages (30d+)
+    if period_days <= 7:
+        # For 7 days: show totals (each day appears once)
+        dow_values = {i: sum(dow_hours[i]) for i in range(7)}
+        chart_label = "Hours by Day"
+    else:
+        # For 30d+: show averages per day of week
+        dow_values = {i: (sum(dow_hours[i]) / len(dow_hours[i]) if dow_hours[i] else 0) for i in range(7)}
+        chart_label = "Avg Hours by Day"
+
+    max_dow_value = max(dow_values.values()) if dow_values else 1
+    if max_dow_value == 0:
+        max_dow_value = 1
+
+    if style == "card":
+        # Compact card - great for Reddit/social sharing
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude Code Stats</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }}
+        .card {{ background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%); border-radius: 16px; padding: 24px; max-width: 520px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); }}
+        .header {{ display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }}
+        .logo {{ width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; }}
+        .title {{ color: #fff; font-size: 18px; font-weight: 600; }}
+        .period {{ color: #9ca3af; font-size: 12px; }}
+        .stats {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }}
+        .stat {{ background: rgba(255,255,255,0.05); border-radius: 10px; padding: 12px 10px; text-align: center; }}
+        .stat-label {{ color: #9ca3af; font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }}
+        .stat-value {{ color: #f59e0b; font-size: 18px; font-weight: 700; margin-bottom: 2px; }}
+        .stat-daily {{ color: #6b7280; font-size: 9px; }}
+        .footer {{ margin-top: 20px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center; }}
+        .ratios {{ color: #10b981; font-size: 12px; font-weight: 500; }}
+        .date {{ color: #6b7280; font-size: 11px; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="header">
+            <div class="logo"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="20" height="18" rx="2" stroke="url(#term-grad)" stroke-width="1.5" fill="none"/><path d="M6 8l4 4-4 4" stroke="url(#term-grad)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 16h6" stroke="url(#term-grad)" stroke-width="1.5" stroke-linecap="round"/><defs><linearGradient id="term-grad" x1="2" y1="3" x2="22" y2="21" gradientUnits="userSpaceOnUse"><stop stop-color="#d97706"/><stop offset="1" stop-color="#f59e0b"/></linearGradient></defs></svg></div>
+            <div>
+                <div class="title">Claude Code Stats</div>
+                <div class="period">{period_label}</div>
+            </div>
+        </div>
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-label">Active</div>
+                <div class="stat-value">{total_active/60:.1f}h</div>
+                <div class="stat-daily">{active_per_day:.1f}h/day</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Clock</div>
+                <div class="stat-value">{total_wall/60:.1f}h</div>
+                <div class="stat-daily">{wall_per_day:.1f}h/day</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Sessions</div>
+                <div class="stat-value">{format_number(total_sessions)}</div>
+                <div class="stat-daily">{sessions_per_day:.1f}/day</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">User Msgs</div>
+                <div class="stat-value">{format_number(total_user_messages)}</div>
+                <div class="stat-daily">{user_messages_per_day:.0f}/day</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Claude Msgs</div>
+                <div class="stat-value">{format_number(total_claude_messages)}</div>
+                <div class="stat-daily">{claude_messages_per_day:.0f}/day</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Total Msgs</div>
+                <div class="stat-value">{format_number(total_messages)}</div>
+                <div class="stat-daily">{messages_per_day:.0f}/day</div>
+            </div>
+        </div>
+        <div class="footer">
+            <div class="ratios">{message_ratio:.1f}x msg ratio · {token_ratio:.2f}x token ratio</div>
+            <div class="date">{now.strftime('%Y-%m-%d')}</div>
+        </div>
+    </div>
+</body>
+</html>"""
+
+    else:  # style == "full"
+        # Build chart bars for day of week
+        chart_bars = ""
+        for i in range(7):
+            height_pct = (dow_values[i] / max_dow_value) * 100 if max_dow_value > 0 else 0
+            value_label = f"{dow_values[i]:.1f}h" if dow_values[i] >= 0.1 else ""
+            chart_bars += f'''<div class="bar-container">
+                <div class="bar-value">{value_label}</div>
+                <div class="bar" style="height: {height_pct}%"></div>
+                <div class="bar-label">{day_names[i]}</div>
+            </div>'''
+
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude Code Stats - Full Report</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f1a; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }}
+        .card {{ background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 20px; padding: 32px; max-width: 640px; width: 100%; box-shadow: 0 12px 48px rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.08); }}
+        .header {{ display: flex; align-items: center; gap: 16px; margin-bottom: 28px; }}
+        .logo {{ width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; }}
+        .header-text .title {{ color: #fff; font-size: 24px; font-weight: 700; }}
+        .header-text .period {{ color: #9ca3af; font-size: 14px; margin-top: 4px; }}
+        .stats-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 28px; }}
+        .stat {{ background: rgba(255,255,255,0.03); border-radius: 12px; padding: 14px 12px; text-align: center; border: 1px solid rgba(255,255,255,0.05); }}
+        .stat-label {{ color: #9ca3af; font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }}
+        .stat-value {{ color: #f59e0b; font-size: 20px; font-weight: 700; margin-bottom: 2px; }}
+        .stat-daily {{ color: #6b7280; font-size: 9px; }}
+        .section-title {{ color: #fff; font-size: 14px; font-weight: 600; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 1px; }}
+        .chart {{ display: flex; gap: 8px; align-items: flex-end; height: 120px; margin-bottom: 28px; padding: 16px; background: rgba(0,0,0,0.2); border-radius: 12px; }}
+        .bar-container {{ flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; }}
+        .bar {{ width: 100%; background: linear-gradient(180deg, #f59e0b 0%, #d97706 100%); border-radius: 4px 4px 0 0; min-height: 2px; }}
+        .bar-value {{ color: #f59e0b; font-size: 10px; margin-bottom: 4px; font-weight: 600; }}
+        .bar-label {{ color: #9ca3af; font-size: 11px; margin-top: 8px; font-weight: 500; }}
+        .token-stats {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }}
+        .token-stat {{ background: rgba(255,255,255,0.03); border-radius: 12px; padding: 16px; border: 1px solid rgba(255,255,255,0.05); text-align: center; }}
+        .token-label {{ color: #9ca3af; font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }}
+        .token-value {{ color: #60a5fa; font-size: 20px; font-weight: 600; }}
+        .token-daily {{ color: #6b7280; font-size: 9px; margin-top: 2px; }}
+        .footer {{ padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center; }}
+        .ratios {{ color: #10b981; font-size: 13px; font-weight: 500; }}
+        .meta {{ color: #6b7280; font-size: 12px; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="header">
+            <div class="logo"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="20" height="18" rx="2" stroke="url(#term-grad)" stroke-width="1.5" fill="none"/><path d="M6 8l4 4-4 4" stroke="url(#term-grad)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 16h6" stroke="url(#term-grad)" stroke-width="1.5" stroke-linecap="round"/><defs><linearGradient id="term-grad" x1="2" y1="3" x2="22" y2="21" gradientUnits="userSpaceOnUse"><stop stop-color="#d97706"/><stop offset="1" stop-color="#f59e0b"/></linearGradient></defs></svg></div>
+            <div class="header-text">
+                <div class="title">Claude Code Stats</div>
+                <div class="period">{period_label}</div>
+            </div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat">
+                <div class="stat-label">Active</div>
+                <div class="stat-value">{total_active/60:.1f}h</div>
+                <div class="stat-daily">{active_per_day:.1f}h/day</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Clock</div>
+                <div class="stat-value">{total_wall/60:.1f}h</div>
+                <div class="stat-daily">{wall_per_day:.1f}h/day</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Sessions</div>
+                <div class="stat-value">{format_number(total_sessions)}</div>
+                <div class="stat-daily">{sessions_per_day:.1f}/day</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">User Msgs</div>
+                <div class="stat-value">{format_number(total_user_messages)}</div>
+                <div class="stat-daily">{user_messages_per_day:.0f}/day</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Claude Msgs</div>
+                <div class="stat-value">{format_number(total_claude_messages)}</div>
+                <div class="stat-daily">{claude_messages_per_day:.0f}/day</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Total Msgs</div>
+                <div class="stat-value">{format_number(total_messages)}</div>
+                <div class="stat-daily">{messages_per_day:.0f}/day</div>
+            </div>
+        </div>
+
+        <div class="section-title">{chart_label}</div>
+        <div class="chart">
+            {chart_bars}
+        </div>
+
+        <div class="section-title">Token Usage</div>
+        <div class="token-stats">
+            <div class="token-stat">
+                <div class="token-label">Input Tokens</div>
+                <div class="token-value">{format_tokens(total_input_tokens)}</div>
+                <div class="token-daily">{format_tokens(int(input_tokens_per_day))}/day</div>
+            </div>
+            <div class="token-stat">
+                <div class="token-label">Output Tokens</div>
+                <div class="token-value">{format_tokens(total_output_tokens)}</div>
+                <div class="token-daily">{format_tokens(int(output_tokens_per_day))}/day</div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <div class="ratios">{message_ratio:.1f}x msg ratio · {token_ratio:.2f}x token ratio</div>
+            <div class="meta">Generated {now.strftime('%Y-%m-%d %H:%M')}</div>
+        </div>
+    </div>
+</body>
+</html>"""
+
+    return html
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Analyze Claude Code usage time and generate statistics report",
@@ -527,7 +870,10 @@ Examples:
   %(prog)s                     Print report to stdout
   %(prog)s -o report.md        Save report to file
   %(prog)s -g 10               Use 10-minute gap threshold (default: 15)
-  %(prog)s --json              Output raw stats as JSON (not yet implemented)
+  %(prog)s --tokens            Include token usage columns in daily breakdown
+  %(prog)s --html card         Generate compact HTML card for sharing
+  %(prog)s --html full         Generate full HTML stats card with chart
+  %(prog)s --period 30         Show stats for last 30 days only
 
 The tool reads data from ~/.claude/ directory where Claude Code stores
 conversation transcripts and statistics.
@@ -555,6 +901,24 @@ conversation transcripts and statistics.
         action="store_true",
         help="Suppress progress messages (only output report)"
     )
+    parser.add_argument(
+        "--tokens", "-t",
+        action="store_true",
+        help="Include token usage (input/output) in daily breakdown instead of clears/compacts"
+    )
+    parser.add_argument(
+        "--html",
+        choices=["card", "full"],
+        default=None,
+        help="Generate HTML output: 'card' for compact shareable card, 'full' for detailed stats with chart"
+    )
+    parser.add_argument(
+        "--period", "-p",
+        type=int,
+        choices=[7, 30, 90],
+        default=None,
+        help="Limit report to last N days (7, 30, or 90)"
+    )
 
     args = parser.parse_args()
 
@@ -567,7 +931,7 @@ conversation transcripts and statistics.
     if not args.quiet:
         print("Loading conversation data...", file=sys.stderr)
 
-    messages, session_summary_counts = load_jsonl_messages()
+    messages, session_summary_counts, daily_tokens = load_jsonl_messages()
     assistant_durations = load_assistant_durations()
     stats_cache = load_stats_cache()
 
@@ -578,6 +942,9 @@ conversation transcripts and statistics.
     if not args.quiet:
         print(f"  Found {len(messages)} messages", file=sys.stderr)
         print(f"  Found {sum(session_summary_counts.values())} compaction events", file=sys.stderr)
+        if daily_tokens:
+            total_tokens = sum(d["input"] + d["output"] for d in daily_tokens.values())
+            print(f"  Found {format_tokens(total_tokens)} tokens across {len(daily_tokens)} days", file=sys.stderr)
         print("Calculating session statistics...", file=sys.stderr)
 
     session_stats = calculate_session_stats(messages, args.gap_threshold, session_summary_counts)
@@ -586,12 +953,28 @@ conversation transcripts and statistics.
         print(f"  Analyzed {len(session_stats)} sessions", file=sys.stderr)
         print("Generating report...", file=sys.stderr)
 
-    report = generate_report(
-        session_stats,
-        assistant_durations,
-        stats_cache,
-        args.gap_threshold
-    )
+    # Determine output format
+    if args.html:
+        # HTML output
+        period_days = args.period if args.period else 7
+        report = generate_html_report(
+            session_stats,
+            stats_cache,
+            daily_tokens,
+            period_days=period_days,
+            style=args.html
+        )
+    else:
+        # Markdown output
+        report = generate_report(
+            session_stats,
+            assistant_durations,
+            stats_cache,
+            args.gap_threshold,
+            daily_tokens=daily_tokens,
+            show_tokens=args.tokens,
+            period_days=args.period
+        )
 
     # Output report
     if args.output:
