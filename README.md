@@ -8,6 +8,7 @@ Usage analytics for [Claude Code](https://claude.ai/code) CLI - see how much tim
 
 - **Active Time Tracking**: Estimates actual usage time by analyzing gaps between messages (accounts for idle periods, breaks, and sessions left open overnight)
 - **Session Analytics**: Track session counts, message breakdowns, and efficiency metrics
+- **Per-Repository Breakdown**: See time spent per project/repository with `--by-repo`
 - **HTML Stats Cards**: Generate shareable cards for Reddit, social media, or your website (dark and light themes)
 - **Token Usage**: Track input/output tokens per day with message and token ratios
 - **Command Usage**: Monitor `/clear` and `/compact` command frequency
@@ -71,6 +72,15 @@ claude-code-stats --html full --light -o stats.html
 
 # Add GitHub username to card
 claude-code-stats --html full --username @yourname -o stats.html
+
+# Show per-repository breakdown
+claude-code-stats --by-repo
+
+# Filter to a single repository
+claude-code-stats --repo my-project
+
+# Custom repo extraction pattern
+claude-code-stats --by-repo --repo-pattern '/code/([^/]+)'
 ```
 
 ### Options
@@ -84,6 +94,9 @@ claude-code-stats --html full --username @yourname -o stats.html
 | `-g, --gap-threshold MINS` | Minutes of inactivity before counting as idle (default: 15) |
 | `--light` | Use light theme with Anthropic brand colors |
 | `-u, --username NAME` | GitHub username to display on HTML cards (or set `GITHUB_USERNAME` in `.env`) |
+| `--by-repo` | Show per-repository breakdown in report |
+| `--repo NAME` | Filter stats to a single repository |
+| `--repo-pattern REGEX` | Custom regex to extract repo name from cwd (or set `REPO_PATTERN` in `.env`) |
 | `-q, --quiet` | Suppress progress messages |
 | `-V, --version` | Show version number |
 

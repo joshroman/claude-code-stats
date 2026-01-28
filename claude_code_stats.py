@@ -33,7 +33,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 # Configuration - Claude Code data locations
 CLAUDE_DIR = Path.home() / ".claude"
@@ -42,6 +42,79 @@ STORE_DB = CLAUDE_DIR / "__store.db"
 STATS_CACHE = CLAUDE_DIR / "stats-cache.json"
 
 DEFAULT_GAP_THRESHOLD_MINUTES = 15
+
+# Default patterns to extract repo name from cwd (first match wins)
+DEFAULT_REPO_PATTERNS = [
+    r'/Projects/([^/]+)',
+    r'/code/([^/]+)',
+    r'/repos/([^/]+)',
+    r'/src/([^/]+)',
+    r'~/([^/]+)',
+]
+
+
+def load_repo_pattern_from_env() -> Optional[str]:
+    """Load custom REPO_PATTERN from .env file if it exists."""
+    import re
+    env_file = Path(__file__).parent / ".env"
+    if env_file.exists():
+        try:
+            with open(env_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("REPO_PATTERN="):
+                        pattern = line.split("=", 1)[1].strip()
+                        # Remove surrounding quotes if present
+                        if pattern.startswith('"') and pattern.endswith('"'):
+                            pattern = pattern[1:-1]
+                        elif pattern.startswith("'") and pattern.endswith("'"):
+                            pattern = pattern[1:-1]
+                        return pattern
+        except IOError:
+            pass
+    return None
+
+
+def get_repo_name(cwd: str, custom_pattern: str = None) -> str:
+    """Extract repo name from cwd using configured or default patterns.
+
+    Args:
+        cwd: Working directory path from JSONL message
+        custom_pattern: Optional regex pattern with capture group for repo name
+
+    Returns:
+        Repository name extracted from path, or fallback to last directory component
+    """
+    import re
+
+    if not cwd:
+        return "unknown"
+
+    # Expand ~ to home directory for matching
+    if cwd.startswith("~"):
+        cwd = str(Path(cwd).expanduser())
+
+    # Try custom pattern first if provided
+    if custom_pattern:
+        try:
+            match = re.search(custom_pattern, cwd)
+            if match and match.groups():
+                return match.group(1)
+        except re.error:
+            pass  # Invalid regex, fall through to defaults
+
+    # Try default patterns
+    for pattern in DEFAULT_REPO_PATTERNS:
+        try:
+            match = re.search(pattern, cwd)
+            if match and match.groups():
+                return match.group(1)
+        except re.error:
+            continue
+
+    # Fallback: last directory component
+    path_parts = cwd.rstrip('/').split('/')
+    return path_parts[-1] if path_parts and path_parts[-1] else "unknown"
 
 
 def parse_timestamp(ts) -> Optional[datetime]:
@@ -62,8 +135,11 @@ def parse_timestamp(ts) -> Optional[datetime]:
     return None
 
 
-def load_jsonl_messages() -> Tuple[List[Dict], Dict[str, int], Dict[str, Dict[str, int]]]:
+def load_jsonl_messages(repo_pattern: str = None) -> Tuple[List[Dict], Dict[str, int], Dict[str, Dict[str, int]]]:
     """Load all messages from JSONL conversation files.
+
+    Args:
+        repo_pattern: Optional regex pattern with capture group for extracting repo name from cwd
 
     Returns:
         Tuple of (messages list, session_summary_counts dict, daily_tokens dict)
@@ -132,6 +208,10 @@ def load_jsonl_messages() -> Tuple[List[Dict], Dict[str, int], Dict[str, Dict[st
                                         )
                                     is_actual_user_input = not is_tool_result and content_str.strip() != ""
 
+                                # Extract cwd and derive repo name
+                                cwd = data.get("cwd", "")
+                                repo_name = get_repo_name(cwd, repo_pattern)
+
                                 messages.append({
                                     "timestamp": dt,
                                     "session_id": data["sessionId"],
@@ -141,6 +221,8 @@ def load_jsonl_messages() -> Tuple[List[Dict], Dict[str, int], Dict[str, Dict[st
                                     "is_assistant": data.get("type") == "assistant",
                                     "is_clear": is_clear,
                                     "is_compact": is_compact,
+                                    "cwd": cwd,
+                                    "repo_name": repo_name,
                                 })
                     except json.JSONDecodeError:
                         continue
@@ -237,6 +319,12 @@ def calculate_session_stats(
         file_summaries = session_summary_counts.get(session_id, 0)
         compact_count = compact_commands + file_summaries
 
+        # Determine primary repo for session (most common repo_name)
+        repo_counts: Dict[str, int] = defaultdict(int)
+        for m in msgs:
+            repo_counts[m.get("repo_name", "unknown")] += 1
+        primary_repo = max(repo_counts.keys(), key=lambda r: repo_counts[r]) if repo_counts else "unknown"
+
         stats.append({
             "session_id": session_id,
             "first_ts": first_ts,
@@ -248,7 +336,8 @@ def calculate_session_stats(
             "assistant_messages": assistant_msgs,
             "clear_count": clear_count,
             "compact_count": compact_count,
-            "date": first_ts.date()
+            "date": first_ts.date(),
+            "repo_name": primary_repo,
         })
 
     return stats
@@ -322,6 +411,77 @@ def aggregate_by_period(
     }
 
 
+def calculate_per_repo_stats(
+    session_stats: List[Dict],
+    period_days: int = None,
+    reference_date: datetime = None
+) -> Dict[str, Dict]:
+    """Calculate statistics grouped by repository.
+
+    Args:
+        session_stats: List of session statistics (must include repo_name field)
+        period_days: If set, only include sessions from last N days
+        reference_date: Reference date for period calculation (default: now)
+
+    Returns:
+        Dict mapping repo_name to stats dict with keys:
+        - sessions: number of sessions
+        - active_hours: total active time in hours
+        - wall_clock_hours: total wall-clock time in hours
+        - efficiency: active/wall-clock percentage
+        - messages: total message count
+        - user_messages: user message count
+        - assistant_messages: assistant message count
+    """
+    if reference_date is None:
+        reference_date = datetime.now()
+
+    # Filter by period if specified
+    if period_days:
+        cutoff = (reference_date - timedelta(days=period_days)).date()
+        filtered = [s for s in session_stats if s["date"] >= cutoff]
+    else:
+        filtered = session_stats
+
+    # Group by repo
+    repos: Dict[str, Dict] = defaultdict(lambda: {
+        "sessions": 0,
+        "active_minutes": 0,
+        "wall_clock_minutes": 0,
+        "messages": 0,
+        "user_messages": 0,
+        "assistant_messages": 0,
+    })
+
+    for s in filtered:
+        repo = s.get("repo_name", "unknown")
+        repos[repo]["sessions"] += 1
+        repos[repo]["active_minutes"] += s["active_minutes"]
+        repos[repo]["wall_clock_minutes"] += s["wall_clock_minutes"]
+        repos[repo]["messages"] += s["message_count"]
+        repos[repo]["user_messages"] += s["user_messages"]
+        repos[repo]["assistant_messages"] += s["assistant_messages"]
+
+    # Convert to final format with hours and efficiency
+    result = {}
+    for repo, data in repos.items():
+        active_hours = data["active_minutes"] / 60
+        wall_hours = data["wall_clock_minutes"] / 60
+        efficiency = (data["active_minutes"] / data["wall_clock_minutes"] * 100) if data["wall_clock_minutes"] > 0 else 0
+
+        result[repo] = {
+            "sessions": data["sessions"],
+            "active_hours": active_hours,
+            "wall_clock_hours": wall_hours,
+            "efficiency": efficiency,
+            "messages": data["messages"],
+            "user_messages": data["user_messages"],
+            "assistant_messages": data["assistant_messages"],
+        }
+
+    return result
+
+
 def get_top_sessions(session_stats: List[Dict], n: int = 10) -> List[Dict]:
     """Get top N sessions by active time."""
     sorted_stats = sorted(session_stats, key=lambda x: x["active_minutes"], reverse=True)
@@ -369,7 +529,8 @@ def generate_report(
     gap_threshold: int,
     daily_tokens: Dict[str, Dict[str, int]] = None,
     show_tokens: bool = False,
-    period_days: int = None
+    period_days: int = None,
+    per_repo_stats: Dict[str, Dict] = None
 ) -> str:
     """Generate markdown report.
 
@@ -381,6 +542,7 @@ def generate_report(
         daily_tokens: Dict mapping date to {"input": int, "output": int}
         show_tokens: Whether to include token columns in output
         period_days: If set, only show data for last N days (7, 30, 90, etc.)
+        per_repo_stats: Dict mapping repo_name to stats (if --by-repo)
     """
     now = datetime.now()
     daily_tokens = daily_tokens or {}
@@ -423,6 +585,24 @@ Generated: **{now.strftime('%Y-%m-%d %H:%M')}**
 
 **Claude Response Time** (actual compute): {total_assistant_minutes/60:.1f}h
 
+"""
+
+    # Add per-repo breakdown if provided
+    if per_repo_stats:
+        period_label = f"Last {period_days} days" if period_days else "All time"
+        report += f"""---
+
+## Per-Repository Breakdown ({period_label})
+
+| Repository | Active | Wall-Clock | Efficiency | Sessions | Messages |
+|------------|--------|------------|------------|----------|----------|
+"""
+        # Sort by active hours descending
+        sorted_repos = sorted(per_repo_stats.items(), key=lambda x: x[1]["active_hours"], reverse=True)
+        for repo, stats in sorted_repos:
+            report += f"| {repo} | {stats['active_hours']:.1f}h | {stats['wall_clock_hours']:.1f}h | {stats['efficiency']:.0f}% | {stats['sessions']} | {stats['messages']} |\n"
+
+    report += """
 ---
 
 ## Last 7 Days - Daily Breakdown
@@ -580,7 +760,8 @@ def generate_html_report(
     period_days: int = 7,
     style: str = "card",
     light_mode: bool = False,
-    username: str = None
+    username: str = None,
+    per_repo_stats: Dict[str, Dict] = None
 ) -> str:
     """Generate HTML report for sharing.
 
@@ -592,6 +773,7 @@ def generate_html_report(
         style: "card" for compact card, "full" for detailed stats card
         light_mode: Use light theme with Anthropic brand colors
         username: GitHub username to display (optional)
+        per_repo_stats: Dict mapping repo_name to stats (if --by-repo)
 
     Returns:
         HTML string
@@ -827,6 +1009,21 @@ def generate_html_report(
         # Chart background for light mode
         chart_bg = "rgba(0,0,0,0.03)" if light_mode else "rgba(0,0,0,0.2)"
 
+        # Build per-repo section if provided
+        repo_section = ""
+        if per_repo_stats and len(per_repo_stats) > 0:
+            # Sort by active hours descending, take top 6
+            sorted_repos = sorted(per_repo_stats.items(), key=lambda x: x[1]["active_hours"], reverse=True)[:6]
+            repo_items = ""
+            for repo, stats in sorted_repos:
+                repo_items += f'''<div class="repo-item">
+                    <div class="repo-name">{repo}</div>
+                    <div class="repo-hours">{stats["active_hours"]:.1f}h</div>
+                    <div class="repo-sessions">{stats["sessions"]} sessions</div>
+                </div>'''
+            repo_section = f'''<div class="section-title">Top Repositories</div>
+        <div class="repo-grid">{repo_items}</div>'''
+
         html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -861,6 +1058,11 @@ def generate_html_report(
         .token-label {{ color: {theme["text"]}; font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }}
         .token-value {{ color: {theme["blue"]}; font-size: 22px; font-weight: 600; }}
         .token-daily {{ color: {theme["text"]}; font-size: 12px; margin-top: 4px; }}
+        .repo-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px; }}
+        .repo-item {{ background: {theme["stat_bg"]}; border-radius: 12px; padding: 14px 12px; text-align: center; border: 1px solid {theme["stat_border"]}; }}
+        .repo-name {{ color: {theme["title"]}; font-size: 12px; font-weight: 600; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+        .repo-hours {{ color: {theme["accent"]}; font-size: 18px; font-weight: 700; }}
+        .repo-sessions {{ color: {theme["text"]}; font-size: 10px; margin-top: 4px; }}
         .footer {{ padding-top: 20px; border-top: 1px solid {theme["divider"]}; }}
         .meta {{ color: {theme["text_secondary"]}; font-size: 12px; }}
         .eye {{ animation: blink 4s ease-in-out infinite; }}
@@ -953,6 +1155,8 @@ def generate_html_report(
             </div>
         </div>
 
+        {repo_section}
+
         <div class="footer">
             <div class="meta">Generated {now.strftime('%Y-%m-%d %H:%M')}</div>
         </div>
@@ -976,6 +1180,9 @@ Examples:
   %(prog)s --html card         Generate compact HTML card for sharing
   %(prog)s --html full         Generate full HTML stats card with chart
   %(prog)s --period 30         Show stats for last 30 days only
+  %(prog)s --by-repo           Show per-repository breakdown
+  %(prog)s --repo my-project   Filter stats to a single repo
+  %(prog)s --repo-pattern '/code/([^/]+)'  Custom repo extraction pattern
 
 The tool reads data from ~/.claude/ directory where Claude Code stores
 conversation transcripts and statistics.
@@ -1032,6 +1239,23 @@ conversation transcripts and statistics.
         default=None,
         help="Limit report to last N days (7, 30, or 90)"
     )
+    parser.add_argument(
+        "--by-repo",
+        action="store_true",
+        help="Show per-repository breakdown in report"
+    )
+    parser.add_argument(
+        "--repo",
+        type=str,
+        default=None,
+        help="Filter stats to a single repository name"
+    )
+    parser.add_argument(
+        "--repo-pattern",
+        type=str,
+        default=None,
+        help="Regex pattern to extract repo name from cwd (e.g., '/code/([^/]+)')"
+    )
 
     args = parser.parse_args()
 
@@ -1055,10 +1279,15 @@ conversation transcripts and statistics.
         print("Make sure you have Claude Code installed and have used it at least once.", file=sys.stderr)
         sys.exit(1)
 
+    # Load repo pattern from .env if not provided via CLI
+    repo_pattern = args.repo_pattern
+    if repo_pattern is None:
+        repo_pattern = load_repo_pattern_from_env()
+
     if not args.quiet:
         print("Loading conversation data...", file=sys.stderr)
 
-    messages, session_summary_counts, daily_tokens = load_jsonl_messages()
+    messages, session_summary_counts, daily_tokens = load_jsonl_messages(repo_pattern=repo_pattern)
     assistant_durations = load_assistant_durations()
     stats_cache = load_stats_cache()
 
@@ -1076,9 +1305,25 @@ conversation transcripts and statistics.
 
     session_stats = calculate_session_stats(messages, args.gap_threshold, session_summary_counts)
 
+    # Filter to single repo if requested
+    if args.repo:
+        original_count = len(session_stats)
+        session_stats = [s for s in session_stats if s.get("repo_name") == args.repo]
+        if not args.quiet:
+            print(f"  Filtered to repo '{args.repo}': {len(session_stats)} of {original_count} sessions", file=sys.stderr)
+
     if not args.quiet:
         print(f"  Analyzed {len(session_stats)} sessions", file=sys.stderr)
+        if args.by_repo:
+            repos = set(s.get("repo_name", "unknown") for s in session_stats)
+            print(f"  Found {len(repos)} repositories", file=sys.stderr)
         print("Generating report...", file=sys.stderr)
+
+    # Calculate per-repo stats if requested
+    per_repo_stats = None
+    if args.by_repo:
+        period_days = args.period if args.period else 7
+        per_repo_stats = calculate_per_repo_stats(session_stats, period_days=period_days)
 
     # Determine output format
     if args.html:
@@ -1091,7 +1336,8 @@ conversation transcripts and statistics.
             period_days=period_days,
             style=args.html,
             light_mode=args.light,
-            username=args.username
+            username=args.username,
+            per_repo_stats=per_repo_stats
         )
     else:
         # Markdown output
@@ -1102,7 +1348,8 @@ conversation transcripts and statistics.
             args.gap_threshold,
             daily_tokens=daily_tokens,
             show_tokens=args.tokens,
-            period_days=args.period
+            period_days=args.period,
+            per_repo_stats=per_repo_stats
         )
 
     # Output report
