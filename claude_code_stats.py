@@ -33,7 +33,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # Configuration - Claude Code data locations
 CLAUDE_DIR = Path.home() / ".claude"
@@ -482,6 +482,132 @@ def calculate_per_repo_stats(
     return result
 
 
+def calculate_period_stats(
+    session_stats: List[Dict],
+    daily_tokens: Dict[str, Dict[str, int]],
+    period_days: int,
+    reference_date: datetime = None
+) -> Dict:
+    """Calculate aggregate stats for a specific period.
+
+    Args:
+        session_stats: List of session statistics
+        daily_tokens: Dict mapping date to {"input": int, "output": int}
+        period_days: Number of days to include
+        reference_date: Reference date (default: now)
+
+    Returns:
+        Dict with all computed stats for the period
+    """
+    if reference_date is None:
+        reference_date = datetime.now()
+
+    cutoff = (reference_date - timedelta(days=period_days)).date()
+    filtered = [s for s in session_stats if s["date"] >= cutoff]
+
+    total_sessions = len(filtered)
+    total_messages = sum(s["message_count"] for s in filtered)
+    total_active = sum(s["active_minutes"] for s in filtered)
+    total_wall = sum(s["wall_clock_minutes"] for s in filtered)
+    total_user_messages = sum(s["user_messages"] for s in filtered)
+    total_claude_messages = sum(s["assistant_messages"] for s in filtered)
+    total_clears = sum(s["clear_count"] for s in filtered)
+    total_compacts = sum(s["compact_count"] for s in filtered)
+    total_tool_results = total_messages - total_user_messages - total_claude_messages
+
+    # Calculate tokens
+    total_input_tokens = 0
+    total_output_tokens = 0
+    for i in range(period_days):
+        d = (reference_date - timedelta(days=i)).date().isoformat()
+        if d in daily_tokens:
+            total_input_tokens += daily_tokens[d]["input"]
+            total_output_tokens += daily_tokens[d]["output"]
+
+    # Per-day averages
+    active_per_day = (total_active / 60) / period_days if period_days > 0 else 0
+    wall_per_day = (total_wall / 60) / period_days if period_days > 0 else 0
+    sessions_per_day = total_sessions / period_days if period_days > 0 else 0
+    messages_per_day = total_messages / period_days if period_days > 0 else 0
+    user_messages_per_day = total_user_messages / period_days if period_days > 0 else 0
+    claude_messages_per_day = total_claude_messages / period_days if period_days > 0 else 0
+    tool_results_per_day = total_tool_results / period_days if period_days > 0 else 0
+    input_tokens_per_day = total_input_tokens / period_days if period_days > 0 else 0
+    output_tokens_per_day = total_output_tokens / period_days if period_days > 0 else 0
+    clears_per_session = total_clears / total_sessions if total_sessions > 0 else 0
+    compacts_per_session = total_compacts / total_sessions if total_sessions > 0 else 0
+
+    # Ratios
+    token_ratio = total_output_tokens / total_input_tokens if total_input_tokens > 0 else 0
+    message_ratio = total_claude_messages / total_user_messages if total_user_messages > 0 else 0
+
+    return {
+        "total_sessions": total_sessions,
+        "total_messages": total_messages,
+        "total_active": total_active,
+        "total_wall": total_wall,
+        "total_user_messages": total_user_messages,
+        "total_claude_messages": total_claude_messages,
+        "total_clears": total_clears,
+        "total_compacts": total_compacts,
+        "total_tool_results": total_tool_results,
+        "total_input_tokens": total_input_tokens,
+        "total_output_tokens": total_output_tokens,
+        "active_per_day": active_per_day,
+        "wall_per_day": wall_per_day,
+        "sessions_per_day": sessions_per_day,
+        "messages_per_day": messages_per_day,
+        "user_messages_per_day": user_messages_per_day,
+        "claude_messages_per_day": claude_messages_per_day,
+        "tool_results_per_day": tool_results_per_day,
+        "input_tokens_per_day": input_tokens_per_day,
+        "output_tokens_per_day": output_tokens_per_day,
+        "clears_per_session": clears_per_session,
+        "compacts_per_session": compacts_per_session,
+        "token_ratio": token_ratio,
+        "message_ratio": message_ratio,
+    }
+
+
+def calculate_daily_repo_stats(
+    session_stats: List[Dict],
+    days: int = 14,
+    reference_date: datetime = None
+) -> Dict[str, Dict[str, float]]:
+    """Calculate daily repository usage for the last N days.
+
+    Args:
+        session_stats: List of session statistics (must include repo_name and date fields)
+        days: Number of days to include (default: 14)
+        reference_date: Reference date for calculation (default: now)
+
+    Returns:
+        Dict mapping date string (YYYY-MM-DD) to Dict mapping repo_name to active hours
+        Example: {"2025-01-27": {"claude-code-stats": 2.5, "obsidian": 1.2}, ...}
+    """
+    if reference_date is None:
+        reference_date = datetime.now()
+
+    result: Dict[str, Dict[str, float]] = {}
+
+    for i in range(days):
+        d = (reference_date - timedelta(days=i)).date()
+        date_str = d.isoformat()
+        result[date_str] = defaultdict(float)
+
+        # Find sessions for this date
+        sessions_for_day = [s for s in session_stats if s["date"] == d]
+        for s in sessions_for_day:
+            repo = s.get("repo_name", "unknown")
+            hours = s["active_minutes"] / 60
+            result[date_str][repo] += hours
+
+        # Convert defaultdict to regular dict
+        result[date_str] = dict(result[date_str])
+
+    return result
+
+
 def get_top_sessions(session_stats: List[Dict], n: int = 10) -> List[Dict]:
     """Get top N sessions by active time."""
     sorted_stats = sorted(session_stats, key=lambda x: x["active_minutes"], reverse=True)
@@ -761,7 +887,8 @@ def generate_html_report(
     style: str = "card",
     light_mode: bool = False,
     username: str = None,
-    per_repo_stats: Dict[str, Dict] = None
+    per_repo_stats: Dict[str, Dict] = None,
+    daily_repo_stats: Dict[str, Dict[str, float]] = None
 ) -> str:
     """Generate HTML report for sharing.
 
@@ -774,6 +901,7 @@ def generate_html_report(
         light_mode: Use light theme with Anthropic brand colors
         username: GitHub username to display (optional)
         per_repo_stats: Dict mapping repo_name to stats (if --by-repo)
+        daily_repo_stats: Dict mapping date to repo->hours for 14-day chart
 
     Returns:
         HTML string
@@ -995,34 +1123,252 @@ def generate_html_report(
 </html>"""
 
     else:  # style == "full"
-        # Build chart bars for day of week
-        chart_bars = ""
-        for i in range(7):
-            height_pct = (dow_values[i] / max_dow_value) * 100 if max_dow_value > 0 else 0
-            value_label = f"{dow_values[i]:.1f}h" if dow_values[i] >= 0.1 else ""
-            chart_bars += f'''<div class="bar-container">
-                <div class="bar-value">{value_label}</div>
-                <div class="bar" style="height: {height_pct}%"></div>
-                <div class="bar-label">{day_names[i]}</div>
-            </div>'''
+        # Calculate stats for all three periods
+        stats_1d = calculate_period_stats(session_stats, daily_tokens, 1, now)
+        stats_7d = calculate_period_stats(session_stats, daily_tokens, 7, now)
+        stats_30d = calculate_period_stats(session_stats, daily_tokens, 30, now)
 
         # Chart background for light mode
         chart_bg = "rgba(0,0,0,0.03)" if light_mode else "rgba(0,0,0,0.2)"
 
-        # Build per-repo section if provided
-        repo_section = ""
-        if per_repo_stats and len(per_repo_stats) > 0:
-            # Sort by active hours descending, take top 6
-            sorted_repos = sorted(per_repo_stats.items(), key=lambda x: x[1]["active_hours"], reverse=True)[:6]
-            repo_items = ""
-            for repo, stats in sorted_repos:
-                repo_items += f'''<div class="repo-item">
-                    <div class="repo-name">{repo}</div>
-                    <div class="repo-hours">{stats["active_hours"]:.1f}h</div>
-                    <div class="repo-sessions">{stats["sessions"]} sessions</div>
+        # Build day-of-week chart for each period
+        def build_dow_chart(period_days_val: int, filtered_sessions: List[Dict]) -> Tuple[str, str]:
+            """Build day-of-week chart bars and label for a given period."""
+            day_names_local = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+            dow_hours_local = {i: [] for i in range(7)}
+
+            for i in range(period_days_val):
+                d = (now - timedelta(days=i)).date()
+                dow = (d.weekday() + 1) % 7
+                sessions_day = [s for s in filtered_sessions if s["date"] == d]
+                active_hrs = sum(s["active_minutes"] for s in sessions_day) / 60
+                dow_hours_local[dow].append(active_hrs)
+
+            if period_days_val <= 7:
+                dow_vals = {i: sum(dow_hours_local[i]) for i in range(7)}
+                label = "Hours by Day"
+            else:
+                dow_vals = {i: (sum(dow_hours_local[i]) / len(dow_hours_local[i]) if dow_hours_local[i] else 0) for i in range(7)}
+                label = "Avg Hours by Day"
+
+            max_val = max(dow_vals.values()) if dow_vals else 1
+            if max_val == 0:
+                max_val = 1
+
+            bars = ""
+            for i in range(7):
+                h_pct = (dow_vals[i] / max_val) * 100 if max_val > 0 else 0
+                val_lbl = f"{dow_vals[i]:.1f}h" if dow_vals[i] >= 0.1 else ""
+                bars += f'''<div class="bar-container">
+                    <div class="bar-value">{val_lbl}</div>
+                    <div class="bar" style="height: {h_pct}%"></div>
+                    <div class="bar-label">{day_names_local[i]}</div>
                 </div>'''
-            repo_section = f'''<div class="section-title">Top Repositories</div>
-        <div class="repo-grid">{repo_items}</div>'''
+            return bars, label
+
+        # Build charts for each period
+        cutoff_1d = (now - timedelta(days=1)).date()
+        cutoff_7d = (now - timedelta(days=7)).date()
+        cutoff_30d = (now - timedelta(days=30)).date()
+        filtered_1d = [s for s in session_stats if s["date"] >= cutoff_1d]
+        filtered_7d = [s for s in session_stats if s["date"] >= cutoff_7d]
+        filtered_30d = [s for s in session_stats if s["date"] >= cutoff_30d]
+
+        chart_bars_1d, chart_label_1d = build_dow_chart(1, filtered_1d)
+        chart_bars_7d, chart_label_7d = build_dow_chart(7, filtered_7d)
+        chart_bars_30d, chart_label_30d = build_dow_chart(30, filtered_30d)
+
+        # Build per-repo section for each period
+        def build_repo_section(period_days_val: int) -> str:
+            repo_stats_for_period = calculate_per_repo_stats(session_stats, period_days=period_days_val, reference_date=now)
+            if not repo_stats_for_period:
+                return ""
+            sorted_repos_p = sorted(repo_stats_for_period.items(), key=lambda x: x[1]["active_hours"], reverse=True)[:6]
+            repo_items_p = ""
+            for repo, rstats in sorted_repos_p:
+                repo_items_p += f'''<div class="repo-item">
+                    <div class="repo-name">{repo}</div>
+                    <div class="repo-hours">{rstats["active_hours"]:.1f}h</div>
+                    <div class="repo-sessions">{rstats["sessions"]} sessions</div>
+                </div>'''
+            return f'''<div class="section-title">Top Repositories</div>
+            <div class="repo-grid">{repo_items_p}</div>'''
+
+        repo_section_1d = build_repo_section(1)
+        repo_section_7d = build_repo_section(7)
+        repo_section_30d = build_repo_section(30)
+
+        # Build 14-day repo activity chart
+        repo_chart_html = ""
+        if daily_repo_stats:
+            # Color palette for repos (6 colors)
+            repo_colors = ["#f59e0b", "#10b981", "#3b82f6", "#8b5cf6", "#ec4899", "#6366f1"]
+
+            # Collect all repos across 14 days
+            all_repos_set = set()
+            for date_data in daily_repo_stats.values():
+                all_repos_set.update(date_data.keys())
+
+            # Calculate total hours per repo across all 14 days
+            repo_totals = defaultdict(float)
+            for date_data in daily_repo_stats.values():
+                for repo, hrs in date_data.items():
+                    repo_totals[repo] += hrs
+
+            # Top 5 repos + "Other"
+            sorted_repos_all = sorted(repo_totals.items(), key=lambda x: x[1], reverse=True)
+            top_repos = [r[0] for r in sorted_repos_all[:5]]
+            other_repos = [r[0] for r in sorted_repos_all[5:]]
+
+            # Assign colors
+            repo_color_map = {repo: repo_colors[i % len(repo_colors)] for i, repo in enumerate(top_repos)}
+            if other_repos:
+                repo_color_map["Other"] = "#6b7280"
+
+            # Find max daily total for scaling
+            max_daily_total = 0
+            for date_data in daily_repo_stats.values():
+                daily_total = sum(date_data.values())
+                if daily_total > max_daily_total:
+                    max_daily_total = daily_total
+            if max_daily_total == 0:
+                max_daily_total = 1
+
+            # Build bars (14 days, most recent on right)
+            dates_sorted = sorted(daily_repo_stats.keys(), reverse=True)[:14]
+            dates_sorted.reverse()  # oldest first for left-to-right
+
+            repo_bars = ""
+            for date_str in dates_sorted:
+                date_data = daily_repo_stats.get(date_str, {})
+                daily_total = sum(date_data.values())
+                bar_height = (daily_total / max_daily_total) * 100 if max_daily_total > 0 else 0
+
+                # Build stacked segments
+                segments = ""
+                cumulative_pct = 0
+                for repo in top_repos:
+                    hrs = date_data.get(repo, 0)
+                    if hrs > 0 and daily_total > 0:
+                        seg_pct = (hrs / daily_total) * 100
+                        segments += f'<div class="bar-segment" style="height: {seg_pct}%; background: {repo_color_map[repo]};"></div>'
+                        cumulative_pct += seg_pct
+
+                # Other repos
+                if other_repos:
+                    other_hrs = sum(date_data.get(r, 0) for r in other_repos)
+                    if other_hrs > 0 and daily_total > 0:
+                        seg_pct = (other_hrs / daily_total) * 100
+                        segments += f'<div class="bar-segment" style="height: {seg_pct}%; background: {repo_color_map["Other"]};"></div>'
+
+                # Date label (show day of month)
+                try:
+                    d_obj = datetime.strptime(date_str, "%Y-%m-%d")
+                    day_label = d_obj.strftime("%d")
+                except ValueError:
+                    day_label = ""
+
+                value_label = f"{daily_total:.1f}h" if daily_total >= 0.1 else ""
+
+                repo_bars += f'''<div class="repo-bar-container">
+                    <div class="repo-bar-value">{value_label}</div>
+                    <div class="repo-bar" style="height: {bar_height}%">{segments}</div>
+                    <div class="repo-bar-label">{day_label}</div>
+                </div>'''
+
+            # Build legend
+            legend_items = ""
+            for repo in top_repos:
+                if repo_totals.get(repo, 0) > 0:
+                    legend_items += f'<span class="legend-item"><span class="legend-color" style="background: {repo_color_map[repo]};"></span>{repo}</span>'
+            if other_repos and sum(repo_totals.get(r, 0) for r in other_repos) > 0:
+                legend_items += f'<span class="legend-item"><span class="legend-color" style="background: {repo_color_map["Other"]};"></span>Other</span>'
+
+            repo_chart_html = f'''<div class="section-title">Repository Activity (14 days)</div>
+            <div class="repo-activity-chart">{repo_bars}</div>
+            <div class="repo-legend">{legend_items}</div>'''
+
+        # Username label
+        username_label = ""
+        if username:
+            if not username.startswith("@"):
+                username = f"@{username}"
+            username_label = f" · {username}"
+
+        # Helper to generate stats section HTML
+        def stats_section_html(period_key: str, stats: Dict, chart_bars_str: str, chart_label_str: str, repo_section_str: str, display: str) -> str:
+            s = stats
+            return f'''<div class="stats-section" data-period="{period_key}" style="display: {display}">
+            <div class="stats-grid">
+                <div class="stat">
+                    <div class="stat-label">Active</div>
+                    <div class="stat-value">{s["total_active"]/60:.1f}h</div>
+                    <div class="stat-daily">{s["active_per_day"]:.1f}h/day</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Clock</div>
+                    <div class="stat-value">{s["total_wall"]/60:.1f}h</div>
+                    <div class="stat-daily">{s["wall_per_day"]:.1f}h/day</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Sessions</div>
+                    <div class="stat-value">{format_number(s["total_sessions"])}</div>
+                    <div class="stat-daily">{s["sessions_per_day"]:.1f}/day</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">User Prompts</div>
+                    <div class="stat-value">{format_number(s["total_user_messages"])}</div>
+                    <div class="stat-daily">{s["user_messages_per_day"]:.0f}/day</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Claude Msgs</div>
+                    <div class="stat-value">{format_number(s["total_claude_messages"])}</div>
+                    <div class="stat-daily">{s["claude_messages_per_day"]:.0f}/day</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Tool Results</div>
+                    <div class="stat-value">{format_number(s["total_tool_results"])}</div>
+                    <div class="stat-daily">{s["tool_results_per_day"]:.0f}/day</div>
+                </div>
+            </div>
+
+            <div class="section-title">{chart_label_str}</div>
+            <div class="chart">{chart_bars_str}</div>
+
+            <div class="section-title">Token Usage</div>
+            <div class="token-stats">
+                <div class="token-stat">
+                    <div class="token-label">Input Tokens</div>
+                    <div class="token-value">{format_tokens(s["total_input_tokens"])}</div>
+                    <div class="token-daily">{format_tokens(int(s["input_tokens_per_day"]))}/day</div>
+                </div>
+                <div class="token-stat">
+                    <div class="token-label">Output Tokens</div>
+                    <div class="token-value">{format_tokens(s["total_output_tokens"])}</div>
+                    <div class="token-daily">{format_tokens(int(s["output_tokens_per_day"]))}/day</div>
+                </div>
+            </div>
+
+            <div class="section-title">Session Behavior</div>
+            <div class="token-stats">
+                <div class="token-stat">
+                    <div class="token-label">Clears</div>
+                    <div class="token-value">{format_number(s["total_clears"])}</div>
+                    <div class="token-daily">{s["clears_per_session"]:.1f}/session</div>
+                </div>
+                <div class="token-stat">
+                    <div class="token-label">Compacts</div>
+                    <div class="token-value">{format_number(s["total_compacts"])}</div>
+                    <div class="token-daily">{s["compacts_per_session"]:.1f}/session</div>
+                </div>
+            </div>
+
+            {repo_section_str}
+        </div>'''
+
+        section_24h = stats_section_html("24h", stats_1d, chart_bars_1d, chart_label_1d, repo_section_1d, "none")
+        section_7d = stats_section_html("7d", stats_7d, chart_bars_7d, chart_label_7d, repo_section_7d, "block")
+        section_30d = stats_section_html("30d", stats_30d, chart_bars_30d, chart_label_30d, repo_section_30d, "none")
 
         html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1033,15 +1379,20 @@ def generate_html_report(
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: {theme["bg"]}; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }}
-        .card {{ background: {theme["card_bg"]}; border-radius: 20px; padding: 32px; max-width: 640px; width: 100%; box-shadow: 0 12px 48px {theme["card_shadow"]}; border: 1px solid {theme["card_border"]}; }}
-        .header {{ display: flex; align-items: center; gap: 16px; margin-bottom: 28px; }}
+        .card {{ background: {theme["card_bg"]}; border-radius: 20px; padding: 32px; max-width: 680px; width: 100%; box-shadow: 0 12px 48px {theme["card_shadow"]}; border: 1px solid {theme["card_border"]}; }}
+        .header {{ display: flex; align-items: center; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }}
         .header-left {{ display: flex; align-items: center; gap: 16px; }}
         .header-right {{ margin-left: auto; text-align: right; }}
         .ratio {{ color: {theme["green"]}; font-size: 14px; font-weight: 600; }}
         .ratio-label {{ color: {theme["text_secondary"]}; font-size: 10px; text-transform: uppercase; }}
         .logo {{ width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; }}
         .header-text .title {{ color: {theme["title"]}; font-size: 24px; font-weight: 700; }}
-        .header-text .period {{ color: {theme["text"]}; font-size: 14px; margin-top: 4px; }}
+        .header-text .subtitle {{ color: {theme["text"]}; font-size: 14px; margin-top: 4px; }}
+        .period-toggle {{ display: flex; gap: 8px; margin-bottom: 24px; }}
+        .toggle-btn {{ background: {theme["stat_bg"]}; border: 1px solid {theme["stat_border"]}; border-radius: 8px; padding: 8px 16px; color: {theme["text"]}; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.2s ease; }}
+        .toggle-btn:hover {{ background: {theme["stat_border"]}; }}
+        .toggle-btn.active {{ background: {theme["accent"]}; color: #fff; border-color: {theme["accent"]}; }}
+        .stats-section {{ transition: opacity 0.2s ease; }}
         .stats-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 28px; }}
         .stat {{ background: {theme["stat_bg"]}; border-radius: 12px; padding: 14px 12px; text-align: center; border: 1px solid {theme["stat_border"]}; }}
         .stat-label {{ color: {theme["text"]}; font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }}
@@ -1063,6 +1414,16 @@ def generate_html_report(
         .repo-name {{ color: {theme["title"]}; font-size: 12px; font-weight: 600; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
         .repo-hours {{ color: {theme["accent"]}; font-size: 18px; font-weight: 700; }}
         .repo-sessions {{ color: {theme["text"]}; font-size: 10px; margin-top: 4px; }}
+        .repo-activity-chart {{ display: flex; gap: 4px; align-items: flex-end; height: 100px; margin-bottom: 12px; padding: 12px; background: {chart_bg}; border-radius: 12px; }}
+        .repo-bar-container {{ flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; }}
+        .repo-bar {{ width: 100%; border-radius: 3px 3px 0 0; min-height: 2px; display: flex; flex-direction: column-reverse; }}
+        .repo-bar-segment {{ width: 100%; }}
+        .repo-bar-value {{ color: {theme["text"]}; font-size: 8px; margin-bottom: 2px; font-weight: 500; }}
+        .repo-bar-label {{ color: {theme["text_secondary"]}; font-size: 9px; margin-top: 6px; }}
+        .bar-segment {{ width: 100%; }}
+        .repo-legend {{ display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }}
+        .legend-item {{ display: flex; align-items: center; gap: 6px; color: {theme["text"]}; font-size: 11px; }}
+        .legend-color {{ width: 12px; height: 12px; border-radius: 3px; }}
         .footer {{ padding-top: 20px; border-top: 1px solid {theme["divider"]}; }}
         .meta {{ color: {theme["text_secondary"]}; font-size: 12px; }}
         .eye {{ animation: blink 4s ease-in-out infinite; }}
@@ -1078,89 +1439,53 @@ def generate_html_report(
                 <div class="logo"><svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 16 16"><rect width="16" height="16" fill="none"/><rect x="3" y="2" width="10" height="6" fill="#d97757"/><rect x="4" y="8" width="1" height="3" fill="#d97757"/><rect x="5.5" y="8" width="1" height="3" fill="#d97757"/><rect x="9.5" y="8" width="1" height="3" fill="#d97757"/><rect x="11" y="8" width="1" height="3" fill="#d97757"/><rect x="2" y="4" width="1" height="3" fill="#d97757"/><rect class="arm-right" x="13" y="4" width="1" height="3" fill="#d97757"/><rect class="eye" x="5" y="3" width="1" height="2" fill="#141413"/><rect class="eye" x="10" y="3" width="1" height="2" fill="#141413"/></svg></div>
                 <div class="header-text">
                     <div class="title">Claude Code Stats</div>
-                    <div class="period">{period_label}</div>
+                    <div class="subtitle" id="period-label">Last 7 days{username_label}</div>
                 </div>
             </div>
             <div class="header-right">
-                <div class="ratio">{message_ratio:.1f}x</div>
+                <div class="ratio" id="msg-ratio">{stats_7d["message_ratio"]:.1f}x</div>
                 <div class="ratio-label">msg ratio</div>
-                <div class="ratio" style="margin-top: 6px;">{token_ratio:.2f}x</div>
+                <div class="ratio" style="margin-top: 6px;" id="token-ratio">{stats_7d["token_ratio"]:.2f}x</div>
                 <div class="ratio-label">token ratio</div>
             </div>
         </div>
 
-        <div class="stats-grid">
-            <div class="stat">
-                <div class="stat-label">Active</div>
-                <div class="stat-value">{total_active/60:.1f}h</div>
-                <div class="stat-daily">{active_per_day:.1f}h/day</div>
-            </div>
-            <div class="stat">
-                <div class="stat-label">Clock</div>
-                <div class="stat-value">{total_wall/60:.1f}h</div>
-                <div class="stat-daily">{wall_per_day:.1f}h/day</div>
-            </div>
-            <div class="stat">
-                <div class="stat-label">Sessions</div>
-                <div class="stat-value">{format_number(total_sessions)}</div>
-                <div class="stat-daily">{sessions_per_day:.1f}/day</div>
-            </div>
-            <div class="stat">
-                <div class="stat-label">User Prompts</div>
-                <div class="stat-value">{format_number(total_user_messages)}</div>
-                <div class="stat-daily">{user_messages_per_day:.0f}/day</div>
-            </div>
-            <div class="stat">
-                <div class="stat-label">Claude Msgs</div>
-                <div class="stat-value">{format_number(total_claude_messages)}</div>
-                <div class="stat-daily">{claude_messages_per_day:.0f}/day</div>
-            </div>
-            <div class="stat">
-                <div class="stat-label">Tool Results</div>
-                <div class="stat-value">{format_number(total_tool_results)}</div>
-                <div class="stat-daily">{tool_results_per_day:.0f}/day</div>
-            </div>
+        <div class="period-toggle">
+            <button class="toggle-btn" data-period="24h">24h</button>
+            <button class="toggle-btn active" data-period="7d">7 days</button>
+            <button class="toggle-btn" data-period="30d">30 days</button>
         </div>
 
-        <div class="section-title">{chart_label}</div>
-        <div class="chart">
-            {chart_bars}
-        </div>
+        {section_24h}
+        {section_7d}
+        {section_30d}
 
-        <div class="section-title">Token Usage</div>
-        <div class="token-stats">
-            <div class="token-stat">
-                <div class="token-label">Input Tokens</div>
-                <div class="token-value">{format_tokens(total_input_tokens)}</div>
-                <div class="token-daily">{format_tokens(int(input_tokens_per_day))}/day</div>
-            </div>
-            <div class="token-stat">
-                <div class="token-label">Output Tokens</div>
-                <div class="token-value">{format_tokens(total_output_tokens)}</div>
-                <div class="token-daily">{format_tokens(int(output_tokens_per_day))}/day</div>
-            </div>
-        </div>
-
-        <div class="section-title">Session Behavior</div>
-        <div class="token-stats">
-            <div class="token-stat">
-                <div class="token-label">Clears</div>
-                <div class="token-value">{format_number(total_clears)}</div>
-                <div class="token-daily">{clears_per_session:.1f}/session</div>
-            </div>
-            <div class="token-stat">
-                <div class="token-label">Compacts</div>
-                <div class="token-value">{format_number(total_compacts)}</div>
-                <div class="token-daily">{compacts_per_session:.1f}/session</div>
-            </div>
-        </div>
-
-        {repo_section}
+        {repo_chart_html}
 
         <div class="footer">
             <div class="meta">Generated {now.strftime('%Y-%m-%d %H:%M')}</div>
         </div>
     </div>
+    <script>
+        const periodLabels = {{ "24h": "Last 24 hours", "7d": "Last 7 days", "30d": "Last 30 days" }};
+        const ratioData = {{
+            "24h": {{ msg: {stats_1d["message_ratio"]:.1f}, token: {stats_1d["token_ratio"]:.2f} }},
+            "7d": {{ msg: {stats_7d["message_ratio"]:.1f}, token: {stats_7d["token_ratio"]:.2f} }},
+            "30d": {{ msg: {stats_30d["message_ratio"]:.1f}, token: {stats_30d["token_ratio"]:.2f} }}
+        }};
+        const userLabel = "{username_label}";
+
+        document.querySelectorAll('.toggle-btn').forEach(btn => {{
+            btn.addEventListener('click', () => {{
+                const period = btn.dataset.period;
+                document.querySelectorAll('.toggle-btn').forEach(b => b.classList.toggle('active', b === btn));
+                document.querySelectorAll('.stats-section').forEach(s => s.style.display = s.dataset.period === period ? 'block' : 'none');
+                document.getElementById('period-label').textContent = periodLabels[period] + userLabel;
+                document.getElementById('msg-ratio').textContent = ratioData[period].msg.toFixed(1) + 'x';
+                document.getElementById('token-ratio').textContent = ratioData[period].token.toFixed(2) + 'x';
+            }});
+        }});
+    </script>
 </body>
 </html>"""
 
@@ -1235,9 +1560,9 @@ conversation transcripts and statistics.
     parser.add_argument(
         "--period", "-p",
         type=int,
-        choices=[7, 30, 90],
+        choices=[1, 7, 30, 90],
         default=None,
-        help="Limit report to last N days (7, 30, or 90)"
+        help="Limit report to last N days (1, 7, 30, or 90)"
     )
     parser.add_argument(
         "--by-repo",
@@ -1329,6 +1654,12 @@ conversation transcripts and statistics.
     if args.html:
         # HTML output
         period_days = args.period if args.period else 7
+
+        # Calculate daily repo stats for 14-day chart (full mode only)
+        daily_repo_stats = None
+        if args.html == "full":
+            daily_repo_stats = calculate_daily_repo_stats(session_stats, days=14)
+
         report = generate_html_report(
             session_stats,
             stats_cache,
@@ -1337,7 +1668,8 @@ conversation transcripts and statistics.
             style=args.html,
             light_mode=args.light,
             username=args.username,
-            per_repo_stats=per_repo_stats
+            per_repo_stats=per_repo_stats,
+            daily_repo_stats=daily_repo_stats
         )
     else:
         # Markdown output
