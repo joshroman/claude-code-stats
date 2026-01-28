@@ -9,6 +9,8 @@ Usage analytics for [Claude Code](https://claude.ai/code) CLI - see how much tim
 - **Active Time Tracking**: Estimates actual usage time by analyzing gaps between messages (accounts for idle periods, breaks, and sessions left open overnight)
 - **Session Analytics**: Track session counts, message breakdowns, and efficiency metrics
 - **Per-Repository Breakdown**: See time spent per project/repository with `--by-repo`
+- **Interactive HTML Dashboard**: Full HTML report with period toggle (24h/7d/30d) and dynamic stats updates
+- **14-Day Repo Activity Chart**: Stacked bar chart showing daily repository usage with color-coded legend
 - **HTML Stats Cards**: Generate shareable cards for Reddit, social media, or your website (dark and light themes)
 - **Token Usage**: Track input/output tokens per day with message and token ratios
 - **Command Usage**: Monitor `/clear` and `/compact` command frequency
@@ -52,10 +54,10 @@ claude-code-stats -o report.md
 # Generate shareable HTML card (compact)
 claude-code-stats --html card -o stats.html
 
-# Generate full HTML stats card with chart
+# Generate full HTML dashboard with interactive period toggle
 claude-code-stats --html full -o stats.html
 
-# Specify time period (7, 30, or 90 days)
+# Specify time period (1, 7, 30, or 90 days)
 claude-code-stats --html full --period 30 -o stats.html
 
 # Include token usage in markdown report
@@ -88,8 +90,8 @@ claude-code-stats --by-repo --repo-pattern '/code/([^/]+)'
 | Option | Description |
 |--------|-------------|
 | `-o, --output FILE` | Save report to file (default: print to stdout) |
-| `--html card\|full` | Generate HTML output: `card` for compact, `full` for detailed with chart |
-| `-p, --period 7\|30\|90` | Time period for HTML output (default: 7 days) |
+| `--html card\|full` | Generate HTML output: `card` for compact, `full` for interactive dashboard |
+| `-p, --period 1\|7\|30\|90` | Time period for HTML output (default: 7 days) |
 | `-t, --tokens` | Include token usage columns in markdown daily breakdown |
 | `-g, --gap-threshold MINS` | Minutes of inactivity before counting as idle (default: 15) |
 | `--light` | Use light theme with Anthropic brand colors |
@@ -99,6 +101,19 @@ claude-code-stats --by-repo --repo-pattern '/code/([^/]+)'
 | `--repo-pattern REGEX` | Custom regex to extract repo name from cwd (or set `REPO_PATTERN` in `.env`) |
 | `-q, --quiet` | Suppress progress messages |
 | `-V, --version` | Show version number |
+
+## HTML Dashboard
+
+The `--html full` option generates an interactive dashboard with:
+
+- **Period Toggle**: Switch between 24h, 7 days, and 30 days views without regenerating
+- **Dynamic Stats**: All metrics update when switching periods (active time, sessions, messages, tokens, ratios)
+- **Hours by Day Chart**: Bar chart showing daily/average hours by day of week
+- **14-Day Repo Activity**: Stacked bar chart showing daily repository usage over 2 weeks
+- **Top Repositories**: Quick view of your most-used projects for the selected period
+- **Dark/Light Themes**: Use `--light` for Anthropic brand colors
+
+The compact `--html card` option generates a static shareable card ideal for social media.
 
 ## Sample Output
 
